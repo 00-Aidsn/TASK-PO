@@ -5,7 +5,7 @@ import { createSessionStore, parseCookies } from '../src/session.js';
 import { createTaskClient, TaskApiError } from '../src/taskClient.js';
 import { loadConfig } from '../src/config.js';
 import { validateOrderInput, todayIn } from '../src/poService.js';
-import { dictionaryToMap } from '../src/catalogue.js';
+import { mapLimit } from '../src/catalogue.js';
 
 describe('email template', () => {
   const base = {
@@ -164,7 +164,9 @@ describe('order validation', () => {
       { supplierId: '1', locationNo: 2, lines: [{ productSupplierId: 5, cases: '2' }, { productSupplierId: 6 }] },
       { today },
     );
-    assert.deepEqual(input.lines, [{ productSupplierId: 5, cases: 2, units: 0, notes: '' }]);
+    assert.deepEqual(input.lines, [
+      { productSupplierId: 5, cases: 2, units: 0, notes: '', expected: { caseCost: undefined, unitCost: undefined } },
+    ]);
     assert.throws(
       () =>
         validateOrderInput(
@@ -177,9 +179,30 @@ describe('order validation', () => {
   });
 });
 
-describe('lookup dictionaries', () => {
-  test('accepts object and key/value array forms', () => {
-    assert.deepEqual([...dictionaryToMap({ 1: 'A', 2: 'B' })], [[1, 'A'], [2, 'B']]);
-    assert.deepEqual([...dictionaryToMap([{ Key: 3, Value: 'C' }])], [[3, 'C']]);
+describe('mapLimit', () => {
+  test('keeps results in order and limits concurrency', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const out = await mapLimit([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return n * 10;
+    });
+    assert.deepEqual(out, [10, 20, 30, 40, 50, 60, 70]);
+    assert.equal(peak, 3);
+  });
+
+  test('stops starting new work after a failure', async () => {
+    const started = [];
+    await assert.rejects(
+      mapLimit([1, 2, 3, 4, 5, 6], 1, async (n) => {
+        started.push(n);
+        if (n === 2) throw new Error('boom');
+      }),
+      /boom/,
+    );
+    assert.deepEqual(started, [1, 2]);
   });
 });

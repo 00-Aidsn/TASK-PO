@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import { requireClerk } from '../session.js';
 import { TaskApiError } from '../taskClient.js';
-import { findLocation, getCatalogue, getSupplierForSend } from '../catalogue.js';
+import { findLocation, getCatalogue, getSupplierLive } from '../catalogue.js';
 import {
+  CatalogueChangedError,
   ORDER_STATUS,
   STATUS_LABELS,
   ValidationError,
   createPurchaseOrder,
   emailPurchaseOrder,
+  findCatalogueChanges,
   priceLines,
   todayIn,
   validateOrderInput,
@@ -57,11 +59,25 @@ export function orderRoutes({ task, mailer, config }) {
 
     const location = await findLocation(task, session, input.locationNo);
     if (!location) throw new ValidationError('You do not have access to that location.', { locationNo: 'Not allowed' });
-    const supplier = await getSupplierForSend(task, session, input.supplierId);
-    if (!supplier) throw new ValidationError('That supplier is not active in TASK.', { supplierId: 'Inactive supplier' });
 
-    session.cache?.delete(`catalogue:${input.supplierId}:${location.locationNo}`); // use current costs
-    const catalogue = await getCatalogue(task, session, input.supplierId, location);
+    // Re-read everything live from TASK and make sure it still matches what the clerk reviewed.
+    const supplier = await getSupplierLive(task, session, input.supplierId);
+    if (!supplier || !supplier.active) {
+      throw new CatalogueChangedError([
+        { type: 'supplier_inactive', message: `${supplier?.name || 'The supplier'} is no longer active in TASK.` },
+      ]);
+    }
+    const catalogue = await getCatalogue(task, session, input.supplierId, location, {
+      ...config.catalogue,
+      onlyProductSupplierIds: new Set(input.lines.map((l) => l.productSupplierId)),
+    });
+    const changes = findCatalogueChanges({
+      lines: input.lines,
+      catalogue,
+      supplier,
+      expectedSupplierEmail: input.expectedSupplierEmail,
+    });
+    if (changes.length) throw new CatalogueChangedError(changes);
     const pricedLines = priceLines(input.lines, catalogue);
 
     session.sending = true;
@@ -112,11 +128,11 @@ export function orderRoutes({ task, mailer, config }) {
     }
     const location = await findLocation(task, session, Number(po.StockLocationNo));
     if (!location) return res.status(403).json({ error: 'You do not have access to that location.' });
-    const supplier = await getSupplierForSend(task, session, Number(po.SupplierID));
-    if (!supplier) return res.status(409).json({ error: 'That supplier is not active in TASK.' });
+    const supplier = await getSupplierLive(task, session, Number(po.SupplierID));
+    if (!supplier || !supplier.active) return res.status(409).json({ error: 'That supplier is no longer active in TASK.' });
 
-    const catalogue = await getCatalogue(task, session, supplier.id, location);
-    const email = await sendEmail(session, { poId, supplier, location, catalogue }, { rethrowSessionErrors: true });
+    // Email lines are built from live TASK data inside emailPurchaseOrder.
+    const email = await sendEmail(session, { poId, supplier, location }, { rethrowSessionErrors: true });
     res.status(email.sent ? 200 : 502).json({ poId, email });
   });
 

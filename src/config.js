@@ -40,6 +40,12 @@ export function loadConfig(env = process.env) {
     sessionIdleMinutes: int(env.SESSION_IDLE_MINUTES, 30, 'SESSION_IDLE_MINUTES'),
     displayTimeZone: env.DISPLAY_TIMEZONE || 'Australia/Sydney',
     companyName: env.COMPANY_NAME || 'Mad Mex',
+    catalogue: {
+      // Only offer products that have a supplier cost for the location's venue.
+      requireVenueCost: bool(env.REQUIRE_VENUE_COST, true),
+      // Parallel GET /products/{id} calls when checking product status.
+      productLookupConcurrency: int(env.PRODUCT_LOOKUP_CONCURRENCY, 6, 'PRODUCT_LOOKUP_CONCURRENCY'),
+    },
     task: {
       baseUrl: (env.TASK_BASE_URL || 'https://madmexuatapi.xchangefusion.com').replace(/\/+$/, ''),
       apiKey: env.TASK_API_KEY || '',
@@ -71,6 +77,9 @@ export function loadConfig(env = process.env) {
   }
   if (config.task.pageSize < 1 || config.task.pageSize > 1000) {
     problems.push('TASK_PAGE_SIZE must be between 1 and 1000');
+  }
+  if (config.catalogue.productLookupConcurrency < 1 || config.catalogue.productLookupConcurrency > 20) {
+    problems.push('PRODUCT_LOOKUP_CONCURRENCY must be between 1 and 20');
   }
   if (config.sessionIdleMinutes < 1) problems.push('SESSION_IDLE_MINUTES must be at least 1');
   if (!['log', 'smtp'].includes(config.mail.mode)) problems.push('MAIL_MODE must be "log" or "smtp"');

@@ -1,6 +1,7 @@
 import { after, before, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MOCK_API_KEY, MOCK_PASSWORD, startStack, tomorrow } from './helpers.js';
+import { sampleData } from './mockTask.js';
 
 let stack;
 before(async () => {
@@ -14,6 +15,7 @@ after(async () => {
   await stack.close();
 });
 beforeEach(() => {
+  stack.mock.data = sampleData(); // tests may change TASK data to prove reads are live
   stack.mock.failItemForProductId = null;
   stack.mock.failPurchaseOrderPut = false;
   stack.mock.failDelete = false;
@@ -140,19 +142,73 @@ describe('reference data', () => {
     );
   });
 
-  test('products merge supplier codes, names and venue costs', async () => {
+  test('products are built live from supplier codes, venue costs and product records', async () => {
     const c = await stack.signIn();
+    stack.mock.requests.length = 0;
     const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
     assert.equal(res.status, 200);
     const byCode = Object.fromEntries(res.data.products.map((p) => [p.code, p]));
-    assert.deepEqual(Object.keys(byCode).sort(), ['AVO-20', 'COR-12', 'LIME-5KG', 'ONR-10KG']); // TOM unavailable
-    assert.equal(byCode['AVO-20'].name, 'Avocados');
+    assert.deepEqual(Object.keys(byCode).sort(), ['AVO-20', 'COR-12', 'LIME-5KG']);
+    assert.deepEqual(res.data.hidden, { unavailable: 1, inactive: 1, missing: 1, noCost: 1 });
+    assert.equal(byCode['AVO-20'].name, 'Avocados'); // from GET /products/{id}
     assert.equal(byCode['AVO-20'].caseCost, 45);
     assert.equal(byCode['COR-12'].unitCost, 1.3); // derived from case cost / case qty
-    assert.equal(byCode['ONR-10KG'].caseCost, null); // no cost on file
+    assert.equal(byCode['AVO-20'].hiddenReason, undefined);
+    assert.deepEqual(res.data.supplier, { id: 1, name: 'Demo Fresh Produce', email: 'orders@produce.example' });
+    assert.ok(Date.parse(res.data.checkedAt));
+
+    const paths = stack.mock.requests.map((r) => `${r.method} ${r.path}`);
+    assert.ok(paths.includes('GET /api/v3/supplier/1'));
+    assert.ok(paths.includes('GET /api/v3/supplier/1/productCodes'));
+    assert.ok(paths.includes('GET /api/v3/supplier/1/venueCosts'));
+    const productCalls = stack.mock.requests.filter((r) => /^\/api\/v3\/products\/\d+$/.test(r.path));
+    assert.equal(productCalls.length, 7);
+    assert.ok(productCalls.every((r) => r.query.locationNo === '11'));
+    assert.equal(stack.mock.requests.find((r) => r.path.endsWith('/venueCosts')).query.venueNo, '1');
 
     const beach = await c.req('GET', '/api/suppliers/1/products?locationNo=12');
-    assert.equal(beach.data.products.find((p) => p.code === 'AVO-20').caseCost, 47);
+    assert.deepEqual(beach.data.products.map((p) => [p.code, p.caseCost]), [['AVO-20', 47]]);
+  });
+
+  test('nothing is cached: changes in TASK show on the next load', async () => {
+    const c = await stack.signIn();
+    await c.req('GET', '/api/suppliers');
+    await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+
+    stack.mock.data.venueCosts.find((v) => v.ID === 1).CaseCost = 50;
+    stack.mock.data.products[1002].IsActive = false;
+    stack.mock.data.suppliers.find((s) => s.SupplierID === 2).IsActive = false;
+    stack.mock.data.suppliers.find((s) => s.SupplierID === 1).EmailAddress = 'new@produce.example';
+
+    const products = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.equal(products.data.products.find((p) => p.code === 'AVO-20').caseCost, 50);
+    assert.equal(products.data.products.find((p) => p.code === 'LIME-5KG'), undefined);
+    assert.equal(products.data.hidden.inactive, 2);
+    assert.equal(products.data.supplier.email, 'new@produce.example');
+
+    const suppliers = await c.req('GET', '/api/suppliers');
+    assert.deepEqual(suppliers.data.suppliers.map((s) => s.id), [3, 1]);
+  });
+
+  test('an inactive supplier has no products', async () => {
+    const c = await stack.signIn();
+    stack.mock.data.suppliers.find((s) => s.SupplierID === 1).IsActive = false;
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.equal(res.status, 409);
+    assert.equal(res.data.code, 'supplier_inactive');
+  });
+
+  test('products without a venue cost can be allowed by setting', async () => {
+    const s = await startStack({ env: { REQUIRE_VENUE_COST: 'false' } });
+    try {
+      const c = await s.signIn();
+      const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+      const onions = res.data.products.find((p) => p.code === 'ONR-10KG');
+      assert.equal(onions.caseCost, null);
+      assert.equal(res.data.hidden.noCost, 0);
+    } finally {
+      await s.close();
+    }
   });
 
   test('locations the clerk cannot access are refused', async () => {
@@ -175,7 +231,17 @@ describe('sending a purchase order', () => {
   test('approver: PO is created, approved, emailed and marked as emailed', async () => {
     const c = await stack.signIn();
     stack.mock.requests.length = 0;
-    const res = await c.req('POST', '/api/orders', order());
+    const res = await c.req(
+      'POST',
+      '/api/orders',
+      order({
+        expectedSupplierEmail: 'orders@produce.example',
+        lines: [
+          { productSupplierId: 501, cases: 2, units: 3, caseCost: 45, unitCost: 2.25 },
+          { productSupplierId: 502, cases: 1, units: 0, caseCost: 18.5, unitCost: 3.7 },
+        ],
+      }),
+    );
     assert.equal(res.status, 201, res.text);
     const { poId } = res.data;
     assert.equal(res.data.status, 1);
@@ -321,8 +387,8 @@ describe('sending a purchase order', () => {
     assert.ok(res.data.fields.lines);
 
     res = await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 999999, cases: 1 }] }));
-    assert.equal(res.status, 400);
-    assert.match(res.data.error, /no longer available/);
+    assert.equal(res.status, 409);
+    assert.equal(res.data.changes[0].type, 'removed');
 
     res = await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 501, cases: -1 }] }));
     assert.equal(res.status, 400);
@@ -332,16 +398,101 @@ describe('sending a purchase order', () => {
     assert.ok(res.data.fields.locationNo);
   });
 
-  test('prices from the browser are ignored', async () => {
+  test('costs always come from TASK, never from the browser', async () => {
     const c = await stack.signIn();
-    const res = await c.req(
-      'POST',
-      '/api/orders',
-      order({ lines: [{ productSupplierId: 501, cases: 1, units: 0, caseCost: 0.01, ExGST: 0.01 }] }),
-    );
+    const res = await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 501, cases: 1, units: 0, ExGST: 0.01 }] }));
     assert.equal(res.status, 201, res.text);
     assert.equal(res.data.totalExGst, 45);
     assert.equal(stack.mock.purchaseOrderItems.get(res.data.poId)[0].ExGST, 45);
+  });
+});
+
+describe('live re-check when sending', () => {
+  const reviewed = (overrides = {}) =>
+    order({
+      expectedSupplierEmail: 'orders@produce.example',
+      lines: [
+        { productSupplierId: 501, cases: 2, units: 0, caseCost: 45, unitCost: 2.25 },
+        { productSupplierId: 503, cases: 1, units: 0, caseCost: 15.6, unitCost: 1.3 },
+      ],
+      ...overrides,
+    });
+
+  async function expectNothingSent(res) {
+    assert.equal(res.status, 409, res.text);
+    assert.equal(res.data.code, 'catalogue_changed');
+    assert.match(res.data.error, /Nothing was sent/);
+    assert.equal(stack.mailer.sent.length, 0);
+    assert.ok(!stack.mock.requests.some((r) => r.method === 'POST' && r.path === '/api/v3/purchaseOrder'));
+    return res.data.changes;
+  }
+
+  test('a price change in TASK since review stops the send', async () => {
+    const c = await stack.signIn();
+    stack.mock.data.venueCosts.find((v) => v.ID === 1).CaseCost = 48;
+    stack.mock.requests.length = 0;
+    const changes = await expectNothingSent(await c.req('POST', '/api/orders', reviewed()));
+    assert.deepEqual(changes.map((x) => x.type), ['price']);
+    assert.match(changes[0].message, /Avocados: case cost changed from \$45\.00 to \$48\.00/);
+
+    // Reviewing again with the new price goes through, using TASK's price.
+    const ok = await c.req('POST', '/api/orders', reviewed({
+      lines: [{ productSupplierId: 501, cases: 2, units: 0, caseCost: 48, unitCost: 2.25 }],
+    }));
+    assert.equal(ok.status, 201, ok.text);
+    assert.equal(ok.data.totalExGst, 96);
+  });
+
+  test('a product made inactive in TASK since review stops the send', async () => {
+    const c = await stack.signIn();
+    stack.mock.data.products[1003].IsActive = false;
+    stack.mock.requests.length = 0;
+    const changes = await expectNothingSent(await c.req('POST', '/api/orders', reviewed()));
+    assert.deepEqual(changes, [{ type: 'unavailable', productSupplierId: 503, message: 'Coriander is now inactive in TASK.' }]);
+  });
+
+  test('a product the supplier marked unavailable stops the send', async () => {
+    const c = await stack.signIn();
+    stack.mock.data.productCodes[1].find((p) => p.ProductSupplierID === 501).IsUnavailable = true;
+    stack.mock.requests.length = 0;
+    const changes = await expectNothingSent(await c.req('POST', '/api/orders', reviewed()));
+    assert.equal(changes[0].type, 'unavailable');
+    assert.match(changes[0].message, /Avocados is now marked unavailable/);
+  });
+
+  test('ordering a hidden product directly is refused', async () => {
+    const c = await stack.signIn();
+    stack.mock.requests.length = 0;
+    const changes = await expectNothingSent(
+      await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 506, cases: 1 }] })),
+    );
+    assert.match(changes[0].message, /Jalapenos \(discontinued\) is now inactive in TASK/);
+  });
+
+  test('a changed supplier email stops the send', async () => {
+    const c = await stack.signIn();
+    stack.mock.data.suppliers.find((s) => s.SupplierID === 1).EmailAddress = 'accounts@produce.example';
+    stack.mock.requests.length = 0;
+    const changes = await expectNothingSent(await c.req('POST', '/api/orders', reviewed()));
+    assert.deepEqual(changes.map((x) => x.type), ['supplier_email']);
+    assert.match(changes[0].message, /accounts@produce\.example/);
+  });
+
+  test('a supplier made inactive since review stops the send', async () => {
+    const c = await stack.signIn();
+    stack.mock.data.suppliers.find((s) => s.SupplierID === 1).IsActive = false;
+    stack.mock.requests.length = 0;
+    const changes = await expectNothingSent(await c.req('POST', '/api/orders', reviewed()));
+    assert.equal(changes[0].type, 'supplier_inactive');
+  });
+
+  test('only the ordered products are re-checked at send time', async () => {
+    const c = await stack.signIn();
+    stack.mock.requests.length = 0;
+    const res = await c.req('POST', '/api/orders', reviewed());
+    assert.equal(res.status, 201, res.text);
+    const productCalls = stack.mock.requests.filter((r) => /^\/api\/v3\/products\/\d+$/.test(r.path));
+    assert.deepEqual(productCalls.map((r) => r.path).sort(), ['/api/v3/products/1001', '/api/v3/products/1003']);
   });
 });
 

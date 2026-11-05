@@ -21,6 +21,34 @@ A small web app for Mad Mex clerks to build a purchase order (PO) in **TASK** (X
 
 Prices are never taken from the browser. Case and unit costs come from TASK supplier venue costs for the chosen location's venue.
 
+## Live, active data only
+
+Supplier, supplier product code, supplier venue cost and product data are read **live from TASK every time**. Nothing is cached. The only exception is the clerk's own location list, which is kept for 5 minutes.
+
+**When a clerk picks a supplier and location**, the app reads:
+
+| TASK endpoint | Used for |
+|---|---|
+| `GET /supplier/{id}` | supplier is active and not deleted; current email address |
+| `GET /supplier/{id}/productCodes` | supplier code and case size; not marked unavailable; within its availability dates |
+| `GET /supplier/{id}/venueCosts?venueNo=` | case and unit cost (ex GST) for the location's venue |
+| `GET /products/{productId}?locationNo=` | product is active in TASK (`IsActive`); product name |
+
+A product is offered only if all of these hold:
+- the supplier is active
+- the supplier product code is available
+- the product is active in TASK
+- the supplier has a cost for that venue (turn this off with `REQUIRE_VENUE_COST=false`)
+
+The screen shows when the data was checked and how many supplier products were hidden, and why. **Refresh from TASK** re-reads everything and keeps the quantities that are still valid.
+
+**When the clerk presses Send**, the app re-reads the supplier and the ordered products from TASK. It compares them with what the clerk reviewed:
+- prices
+- product and supplier status
+- the supplier's email address
+
+If anything changed, **nothing is created or sent**. The clerk sees what changed, the product list is refreshed, and they review again.
+
 ## How sign-in works
 
 - The browser never sees the TASK API key or the clerk's TASK token. The server keeps both.
@@ -89,6 +117,8 @@ This runs the app against an in-memory fake TASK API with demo data. Emails are 
 | `TRUST_PROXY` | (blank) | Set if behind a reverse proxy, e.g. `1` |
 | `DISPLAY_TIMEZONE` | `Australia/Sydney` | Time zone for dates in the UI and emails |
 | `COMPANY_NAME` | `Mad Mex` | Shown in the header and emails |
+| `REQUIRE_VENUE_COST` | `true` | Only offer products that have a supplier cost for the location's venue |
+| `PRODUCT_LOOKUP_CONCURRENCY` | `6` | Parallel `GET /products/{id}` calls when checking product status (1-20) |
 | `MAIL_MODE` | `log` | `log` writes emails to `MAIL_OUTBOX_DIR`; `smtp` sends them |
 | `MAIL_FROM` | (blank) | Sender address (required for `smtp`) |
 | `MAIL_CC` | (blank) | Comma-separated copy addresses, e.g. a purchasing inbox |
@@ -104,10 +134,10 @@ All calls go to `{TASK_BASE_URL}/api/v3`. Every call sends the `Key` header. Aft
 | Clerk sign-in | `POST /auth/clerk/login` with `{ Login, Password, LoginType }` |
 | Clerk profile and permissions | `GET /auth/clerk/currentUser` |
 | Locations (and their venue) | `GET /stock/stocklocations` |
-| Product names | `GET /lookup/products` |
-| Suppliers | `GET /supplier`, `GET /supplier/{id}` |
-| Supplier products and case sizes | `GET /supplier/{id}/productCodes` |
-| Supplier costs for a venue | `GET /supplier/{id}/venueCosts?venueNo=` |
+| Suppliers (live, active only) | `GET /supplier`, `GET /supplier/{id}` |
+| Supplier products and case sizes (live) | `GET /supplier/{id}/productCodes` |
+| Supplier costs for a venue (live) | `GET /supplier/{id}/venueCosts?venueNo=` |
+| Product status and name (live) | `GET /products/{productId}?locationNo=` |
 | PO templates | `GET /purchaseOrder/templates`, `GET /purchaseOrder/templates/{id}/items` |
 | Create / read / update / delete PO | `POST /purchaseOrder`, `GET`/`PUT`/`DELETE /purchaseOrder/{id}` |
 | PO lines | `POST`/`GET /purchaseOrder/{id}/items` |
@@ -125,8 +155,13 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - each line's product, cases, units, `CaseQty`, `TotalUnits`, `ExGST` (case cost) and `UnitExGST` (unit cost)
    - whether TASK fills in GST and totals itself (`Subtotal`, `Tax`, `Total`, `IncGST`). This app sends **ex-GST** values only.
 4. Confirm the supplier venue costs are ex GST, as the app assumes.
-5. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
-6. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
+5. Confirm the live product checks:
+   - Clerks' TASK accounts are allowed to call `GET /products/{id}`. If not, the product list shows a permission error.
+   - `IsActive` on that call means "can be ordered" for your business.
+   - The hidden-product counts make sense. If many products show "no supplier cost for this venue", either load venue costs in TASK or set `REQUIRE_VENUE_COST=false`.
+   - The product list loads quickly enough for your largest supplier. It makes one product call per supplier product, `PRODUCT_LOOKUP_CONCURRENCY` at a time.
+6. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
+7. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
 
 ## Development
 
@@ -137,6 +172,8 @@ npm test
 The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - sign-in and permissions
 - session expiry and idle timeout
+- live supplier and product checks: no caching, and hidden reasons
+- send-time re-checks for price, product status, supplier status and supplier email
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard
 - that the API key and tokens never appear in responses
@@ -148,7 +185,7 @@ src/
   config.js        environment settings and validation
   taskClient.js    TASK API client (Key + Bearer headers, paging, error mapping)
   session.js       in-memory sessions, cookie, idle timeout
-  catalogue.js     locations, suppliers, product catalogue and costs, templates
+  catalogue.js     locations; live suppliers, supplier products, venue costs and product status; templates
   poService.js     order validation, PO creation with rollback, supplier email
   emailTemplate.js supplier email (HTML + text)
   mailer.js        SMTP or log-to-outbox

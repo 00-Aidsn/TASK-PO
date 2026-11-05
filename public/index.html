@@ -49,6 +49,7 @@
 
     <!-- Builder -->
     <section id="builder-view" class="view" hidden>
+      <div class="notice warn changes" id="builder-notice" role="alert" hidden></div>
       <div class="card">
         <h2 class="card-title">Order from</h2>
         <div class="grid-2">
@@ -78,9 +79,11 @@
           <div class="filters">
             <input type="search" id="product-search" placeholder="Search product or code" aria-label="Search products">
             <label class="check"><input type="checkbox" id="only-ordered"> On this order only</label>
+            <button type="button" class="btn" id="refresh-products">Refresh from TASK</button>
           </div>
         </div>
         <p class="muted small" id="products-status"></p>
+        <p class="muted small live-status" id="products-live"></p>
         <div class="table-wrap">
           <table class="products" id="products-table">
             <thead>

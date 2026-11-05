@@ -1,5 +1,5 @@
-import { renderPurchaseOrderEmail } from './emailTemplate.js';
-import { getProductNames } from './catalogue.js';
+import { formatMoney, renderPurchaseOrderEmail } from './emailTemplate.js';
+import { HIDDEN_REASONS, getCatalogue, getProductStatuses } from './catalogue.js';
 
 export const ORDER_STATUS = Object.freeze({
   AwaitingApproval: 0,
@@ -32,6 +32,15 @@ export class ValidationError extends Error {
   }
 }
 
+/** Live TASK data no longer matches what the clerk reviewed; nothing has been created. */
+export class CatalogueChangedError extends Error {
+  constructor(changes) {
+    super('Some details changed in TASK since you loaded this supplier. Nothing was sent. Check the order and review it again.');
+    this.name = 'CatalogueChangedError';
+    this.changes = changes;
+  }
+}
+
 export class OrderError extends Error {
   constructor(message, { poId = null, rolledBack = false, cause } = {}) {
     super(message, { cause });
@@ -57,6 +66,14 @@ function text(value, max, field, fields) {
   const trimmed = value.replace(/\r\n/g, '\n').trim();
   if (trimmed.length > max) fields[field] = `Keep this under ${max} characters`;
   return trimmed;
+}
+
+/** An expected cost sent by the browser (what the clerk reviewed). undefined = not supplied. */
+function expectedCost(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : NaN;
 }
 
 function quantity(value) {
@@ -109,12 +126,18 @@ export function validateOrderInput(body, { today }) {
       const productSupplierId = positiveInt(raw?.productSupplierId);
       const cases = quantity(raw?.cases);
       const units = quantity(raw?.units);
+      const caseCost = expectedCost(raw?.caseCost);
+      const unitCost = expectedCost(raw?.unitCost);
       if (!productSupplierId) {
         fields[`lines.${i}`] = 'Unknown product';
         return;
       }
       if (Number.isNaN(cases) || Number.isNaN(units)) {
         fields[`lines.${i}`] = 'Quantities must be numbers of 0 or more';
+        return;
+      }
+      if (Number.isNaN(caseCost) || Number.isNaN(unitCost)) {
+        fields[`lines.${i}`] = 'Costs must be numbers';
         return;
       }
       if (cases === 0 && units === 0) return; // ignore empty lines
@@ -124,9 +147,18 @@ export function validateOrderInput(body, { today }) {
       }
       seen.add(productSupplierId);
       const notes = text(raw?.notes, LIMITS.notes, `lines.${i}.notes`, fields);
-      lines.push({ productSupplierId, cases, units, notes });
+      lines.push({ productSupplierId, cases, units, notes, expected: { caseCost, unitCost } });
     });
     if (!lines.length && !fields.lines) fields.lines = 'Enter a quantity for at least one product';
+  }
+
+  let expectedSupplierEmail;
+  if (body.expectedSupplierEmail !== undefined && body.expectedSupplierEmail !== null) {
+    if (typeof body.expectedSupplierEmail !== 'string' || body.expectedSupplierEmail.length > 320) {
+      fields.expectedSupplierEmail = 'Not valid';
+    } else {
+      expectedSupplierEmail = body.expectedSupplierEmail.trim();
+    }
   }
 
   const idempotencyKey =
@@ -135,10 +167,63 @@ export function validateOrderInput(body, { today }) {
   if (Object.keys(fields).length) {
     throw new ValidationError('Please fix the highlighted fields.', fields);
   }
-  return { supplierId, locationNo, deliveryDate, customerPo, comments, shipToAddress, lines, idempotencyKey };
+  return { supplierId, locationNo, deliveryDate, customerPo, comments, shipToAddress, lines, expectedSupplierEmail, idempotencyKey };
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
+
+function sameCost(expected, live) {
+  if (expected === undefined) return true; // the caller did not say what it expected
+  if (expected === null || live === null || live === undefined) return expected === null && (live === null || live === undefined);
+  return Math.abs(expected - live) < 0.005;
+}
+
+/**
+ * Compares what the clerk reviewed with live TASK data. Returns a list of changes
+ * ({ type, productSupplierId?, message }); empty when everything still matches.
+ */
+export function findCatalogueChanges({ lines, catalogue, supplier, expectedSupplierEmail }) {
+  const changes = [];
+  if (expectedSupplierEmail !== undefined && expectedSupplierEmail.toLowerCase() !== supplier.email.toLowerCase()) {
+    changes.push({
+      type: 'supplier_email',
+      message: supplier.email
+        ? `${supplier.name}'s email address in TASK is now ${supplier.email}.`
+        : `${supplier.name} no longer has an email address in TASK.`,
+    });
+  }
+  for (const line of lines) {
+    const entry = catalogue.all.get(line.productSupplierId);
+    if (!entry) {
+      changes.push({
+        type: 'removed',
+        productSupplierId: line.productSupplierId,
+        message: `A product on the order (supplier product ${line.productSupplierId}) is no longer listed for ${supplier.name}.`,
+      });
+      continue;
+    }
+    if (entry.hiddenReason) {
+      changes.push({
+        type: 'unavailable',
+        productSupplierId: line.productSupplierId,
+        message: `${entry.name} is now ${HIDDEN_REASONS[entry.hiddenReason]}.`,
+      });
+      continue;
+    }
+    const { caseCost, unitCost } = line.expected || {};
+    if (!sameCost(caseCost, entry.caseCost) || !sameCost(unitCost, entry.unitCost)) {
+      const caseChanged = !sameCost(caseCost, entry.caseCost);
+      changes.push({
+        type: 'price',
+        productSupplierId: line.productSupplierId,
+        message: caseChanged
+          ? `${entry.name}: case cost changed from ${formatMoney(caseCost)} to ${formatMoney(entry.caseCost)}.`
+          : `${entry.name}: unit cost changed from ${formatMoney(unitCost)} to ${formatMoney(entry.unitCost)}.`,
+      });
+    }
+  }
+  return changes;
+}
 
 /** Attaches catalogue data (case size, costs) to each line. Throws if a product isn't in the catalogue. */
 export function priceLines(lines, catalogue) {
@@ -242,9 +327,9 @@ export async function createPurchaseOrder({ task, token, clerk, input, pricedLin
 }
 
 /** Builds email lines from what TASK actually stored for the PO. */
-export function emailLinesFromItems(items, catalogue, productNames) {
+export function emailLinesFromItems(items, catalogue, productNames = new Map()) {
   return items.map((item) => {
-    const product = catalogue?.byProductSupplierId.get(Number(item.ProductSupplierID));
+    const product = catalogue?.all.get(Number(item.ProductSupplierID));
     const caseQty = product?.caseQty ?? (Number(item.CaseQty) > 0 ? Number(item.CaseQty) : 1);
     const cases = Number(item.Cases) || 0;
     const units = Number(item.Units) || 0;
@@ -271,13 +356,21 @@ export function emailLinesFromItems(items, catalogue, productNames) {
 export async function emailPurchaseOrder({ task, session, mailer, config, poId, supplier, location, catalogue, now = () => new Date() }) {
   const token = session.accessToken;
   const clerk = session.clerk;
-  const [po, items, productNames] = await Promise.all([
-    task.getPurchaseOrder(token, poId),
-    task.getPurchaseOrderItems(token, poId),
-    getProductNames(task, session),
-  ]);
+  const [po, items] = await Promise.all([task.getPurchaseOrder(token, poId), task.getPurchaseOrderItems(token, poId)]);
   if (!po) throw new OrderError(`TASK could not find purchase order #${poId}.`, { poId });
   if (!items.length) throw new OrderError(`Purchase order #${poId} has no lines in TASK, so it was not emailed.`, { poId });
+
+  // Product codes, case sizes and names for the email come live from TASK.
+  catalogue ??= await getCatalogue(task, session, supplier.id, location, {
+    ...config.catalogue,
+    onlyProductSupplierIds: new Set(items.map((i) => Number(i.ProductSupplierID))),
+  });
+  const unknown = items.filter((i) => !catalogue.all.has(Number(i.ProductSupplierID))).map((i) => i.ProductID);
+  const productNames = new Map();
+  if (unknown.length) {
+    const statuses = await getProductStatuses(task, session, unknown, location.locationNo, config.catalogue.productLookupConcurrency);
+    for (const [id, p] of statuses) if (p.name) productNames.set(id, p.name);
+  }
 
   const email = renderPurchaseOrderEmail({
     companyName: config.companyName,

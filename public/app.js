@@ -16,6 +16,8 @@
     supplierId: null,
     products: [],
     productsReady: false,
+    hidden: null,
+    checkedAt: null,
     qty: new Map(), // productSupplierId -> { cases, units }
     templates: [],
     loadSeq: 0,
@@ -111,6 +113,31 @@
     });
   }
 
+  const HIDDEN_LABELS = {
+    inactive: 'inactive in TASK',
+    missing: 'not found in TASK',
+    unavailable: 'marked unavailable for this supplier',
+    noCost: 'with no supplier cost for this venue',
+  };
+
+  function formatTime(iso) {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  }
+
+  /** Shows a warning above the builder with an optional list of details. */
+  function showBuilderNotice(title, items = []) {
+    const node = $('builder-notice');
+    if (!title) {
+      node.replaceChildren();
+      show(node, false);
+      return;
+    }
+    node.replaceChildren(el('strong', { text: title }), items.length ? el('ul', {}, items.map((t) => el('li', { text: t }))) : null);
+    show(node, true);
+    node.scrollIntoView({ block: 'nearest' });
+  }
+
   function fillSelect(select, options, placeholder) {
     select.replaceChildren(
       el('option', { value: '', text: placeholder }),
@@ -145,9 +172,12 @@
     state.suppliers = [];
     state.products = [];
     state.productsReady = false;
+    state.hidden = null;
+    state.checkedAt = null;
     state.templates = [];
     state.qty.clear();
     state.lastResult = null;
+    showBuilderNotice('');
     for (const id of ['delivery-date', 'customer-po', 'ship-to', 'comments', 'product-search']) $(id).value = '';
     $('only-ordered').checked = false;
   }
@@ -288,6 +318,7 @@
     }
     state[key] = next;
     state.qty.clear();
+    showBuilderNotice('');
     renderSupplierEmail();
     loadProducts();
   }
@@ -313,30 +344,70 @@
     show(node, true);
   }
 
-  async function loadProducts() {
+  /**
+   * Loads the supplier's products for the location, live from TASK.
+   * With keepQuantities, quantities are kept for products that are still orderable;
+   * returns the names of ordered products that were dropped.
+   */
+  async function loadProducts({ keepQuantities = false } = {}) {
     const seq = ++state.loadSeq;
+    const previous = new Map(state.products.map((p) => [p.productSupplierId, p]));
+    const keptQty = keepQuantities ? new Map(state.qty) : new Map();
     state.products = [];
     state.productsReady = false;
+    state.hidden = null;
+    state.checkedAt = null;
     state.templates = [];
+    setMessage($('builder-error'), '');
     renderBuilder();
-    if (!state.locationNo || !state.supplierId) return;
+    if (!state.locationNo || !state.supplierId) return [];
 
-    $('products-status').textContent = 'Loading products…';
+    $('products-status').textContent = 'Checking products live with TASK…';
+    $('refresh-products').disabled = true;
     const query = `supplierId=${state.supplierId}&locationNo=${state.locationNo}`;
     const productsReq = api('GET', `/suppliers/${state.supplierId}/products?locationNo=${state.locationNo}`);
     const templatesReq = api('GET', `/templates?${query}`).catch(() => ({ templates: [] }));
+    const removed = [];
     try {
-      const [{ products }, { templates }] = await Promise.all([productsReq, templatesReq]);
-      if (seq !== state.loadSeq) return;
-      state.products = products;
+      const [live, { templates }] = await Promise.all([productsReq, templatesReq]);
+      if (seq !== state.loadSeq) return [];
+      state.products = live.products;
+      state.hidden = live.hidden;
+      state.checkedAt = live.checkedAt;
       state.templates = templates;
       state.productsReady = true;
+
+      // Keep the supplier's name and email in step with TASK.
+      const supplier = state.suppliers.find((s) => s.id === live.supplier.id);
+      if (supplier) Object.assign(supplier, live.supplier);
+      renderSupplierEmail();
+
+      const orderable = new Set(live.products.map((p) => p.productSupplierId));
+      state.qty = new Map();
+      for (const [psid, q] of keptQty) {
+        if (orderable.has(psid)) state.qty.set(psid, q);
+        else removed.push(previous.get(psid)?.name || `Product ${psid}`);
+      }
     } catch (err) {
-      if (seq !== state.loadSeq) return;
+      if (seq !== state.loadSeq) return [];
+      state.qty = new Map();
       if (err.status !== 401) setMessage($('builder-error'), err.message);
+    } finally {
+      if (seq === state.loadSeq) $('refresh-products').disabled = false;
     }
     renderBuilder();
+    return removed;
   }
+
+  $('refresh-products').addEventListener('click', async () => {
+    const removed = await loadProducts({ keepQuantities: true });
+    if (removed.length) {
+      showBuilderNotice(
+        'These products are no longer available in TASK and were removed from the order:',
+        removed,
+      );
+    }
+  });
 
   // ---------------------------------------------------------------- products table
   function lineTotal(product, q) {
@@ -398,9 +469,10 @@
     });
 
     const status = $('products-status');
-    if (!state.products.length) status.textContent = 'This supplier has no products available for this location in TASK.';
+    if (!state.products.length) status.textContent = 'This supplier has no active products for this location in TASK.';
     else if (!rows.length) status.textContent = 'No products match.';
-    else status.textContent = `${rows.length} of ${state.products.length} products`;
+    else status.textContent = `${rows.length} of ${state.products.length} active products`;
+    renderLiveStatus();
 
     body.replaceChildren(
       ...rows.map((p) => {
@@ -419,6 +491,23 @@
         );
       }),
     );
+  }
+
+  function renderLiveStatus() {
+    const node = $('products-live');
+    if (!state.productsReady || !state.checkedAt) {
+      node.textContent = '';
+      return;
+    }
+    let text = `Checked live with TASK at ${formatTime(state.checkedAt)}.`;
+    const parts = Object.entries(state.hidden || {})
+      .filter(([, n]) => n > 0)
+      .map(([reason, n]) => `${n} ${HIDDEN_LABELS[reason] || reason}`);
+    if (parts.length) {
+      const total = Object.values(state.hidden).reduce((a, b) => a + b, 0);
+      text += ` ${total} supplier ${total === 1 ? 'product is' : 'products are'} not shown: ${parts.join('; ')}.`;
+    }
+    node.textContent = text;
   }
 
   $('products-body').addEventListener('input', (event) => {
@@ -491,7 +580,7 @@
       renderOrderBar();
       $('products-status').textContent =
         `Loaded ${loaded} ${loaded === 1 ? 'line' : 'lines'} from the template.` +
-        (skipped ? ` ${skipped} template ${skipped === 1 ? 'line is' : 'lines are'} not available from this supplier and ${skipped === 1 ? 'was' : 'were'} skipped.` : '');
+        (skipped ? ` ${skipped} template ${skipped === 1 ? 'line is' : 'lines are'} not currently active for this supplier and ${skipped === 1 ? 'was' : 'were'} skipped.` : '');
     } catch (err) {
       if (err.status !== 401) setMessage($('builder-error'), err.message);
     } finally {
@@ -568,7 +657,15 @@
       customerPo: $('customer-po').value.trim() || undefined,
       shipToAddress: $('ship-to').value.trim() || undefined,
       comments: $('comments').value.trim() || undefined,
-      lines: lines.map((l) => ({ productSupplierId: l.product.productSupplierId, cases: l.cases, units: l.units })),
+      // What the clerk reviewed: the server re-checks these against live TASK data before sending.
+      lines: lines.map((l) => ({
+        productSupplierId: l.product.productSupplierId,
+        cases: l.cases,
+        units: l.units,
+        caseCost: l.product.caseCost,
+        unitCost: l.product.unitCost,
+      })),
+      expectedSupplierEmail: currentSupplier().email,
       idempotencyKey: state.idempotencyKey,
     };
     state.sending = true;
@@ -580,10 +677,23 @@
     try {
       const result = await api('POST', '/orders', body);
       state.lastResult = result;
+      showBuilderNotice('');
       $('review-dialog').close();
       renderResult(result);
       showView('result');
     } catch (err) {
+      if (err.status === 409 && err.data && err.data.code === 'catalogue_changed') {
+        $('review-dialog').close();
+        showBuilderNotice(err.message, (err.data.changes || []).map((c) => c.message));
+        const removed = await loadProducts({ keepQuantities: true });
+        if (removed.length) {
+          showBuilderNotice(err.message, [
+            ...(err.data.changes || []).map((c) => c.message),
+            `Removed from the order: ${removed.join(', ')}.`,
+          ]);
+        }
+        return;
+      }
       if (err.status !== 401) {
         let message = err.message;
         if (err.data && err.data.fields) {

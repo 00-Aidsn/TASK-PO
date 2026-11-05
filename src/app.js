@@ -4,7 +4,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { createSessionStore, sessionMiddleware } from './session.js';
 import { TaskApiError } from './taskClient.js';
-import { OrderError, ValidationError } from './poService.js';
+import { CatalogueChangedError, OrderError, ValidationError } from './poService.js';
 import { authRoutes } from './routes/auth.js';
 import { lookupRoutes } from './routes/lookups.js';
 import { orderRoutes } from './routes/orders.js';
@@ -45,7 +45,7 @@ export function createApp({ config, task, mailer, store = createSessionStore({ i
   app.use('/api', sessionMiddleware({ store, cookieSecure: config.cookieSecure }));
 
   app.use('/api', authRoutes({ task, config }));
-  app.use('/api', lookupRoutes({ task }));
+  app.use('/api', lookupRoutes({ task, config }));
   app.use('/api', orderRoutes({ task, mailer, config }));
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
@@ -56,6 +56,9 @@ export function createApp({ config, task, mailer, store = createSessionStore({ i
     if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'The request was not valid JSON.' });
     if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'The order is too large.' });
     if (err instanceof ValidationError) return res.status(400).json({ error: err.message, fields: err.fields });
+    if (err instanceof CatalogueChangedError) {
+      return res.status(409).json({ code: 'catalogue_changed', error: err.message, changes: err.changes });
+    }
     if (err instanceof OrderError) {
       return res.status(502).json({ error: err.message, poId: err.poId, rolledBack: err.rolledBack });
     }

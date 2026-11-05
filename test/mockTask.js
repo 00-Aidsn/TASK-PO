@@ -64,18 +64,25 @@ export function sampleData() {
       { SupplierID: 3, SupplierName: 'Demo Dairy', EmailAddress: '', IsActive: true },
       { SupplierID: 4, SupplierName: 'Inactive Supplier', EmailAddress: 'old@inactive.example', IsActive: false },
     ],
-    productNames: {
-      1001: 'Avocados',
-      1002: 'Limes',
-      1003: 'Coriander',
-      1004: 'Red onions',
-      1005: 'Roma tomatoes',
-      2001: 'Burrito foil sheets',
-      2002: 'Takeaway bowls 750ml',
-      2003: 'Napkins <white>',
-      3001: 'Sour cream 2kg',
-      3002: 'Shredded cheese 2kg',
-    },
+    // GET /products/{id} records (ProductBusinessModel). 1006 is inactive; 1007 does not exist.
+    products: Object.fromEntries(
+      [
+        [1001, 'Avocados'],
+        [1002, 'Limes'],
+        [1003, 'Coriander'],
+        [1004, 'Red onions'],
+        [1005, 'Roma tomatoes'],
+        [1006, 'Jalapenos (discontinued)', false],
+        [2001, 'Burrito foil sheets'],
+        [2002, 'Takeaway bowls 750ml'],
+        [2003, 'Napkins <white>'],
+        [3001, 'Sour cream 2kg'],
+        [3002, 'Shredded cheese 2kg'],
+      ].map(([id, name, active = true]) => [
+        id,
+        { ProductId: id, PLU: id, ProductDescription: name, POSDisplay: name.toUpperCase(), IsActive: active },
+      ]),
+    ),
     productCodes: {
       1: [
         { ProductSupplierID: 501, SupplierID: 1, ProductID: 1001, SupplierProductCode: 'AVO-20', CaseQty: 20, CaseDescription: 'Tray of 20' },
@@ -83,6 +90,8 @@ export function sampleData() {
         { ProductSupplierID: 503, SupplierID: 1, ProductID: 1003, SupplierProductCode: 'COR-12', CaseQty: 12, CaseDescription: '12 bunches' },
         { ProductSupplierID: 504, SupplierID: 1, ProductID: 1004, SupplierProductCode: 'ONR-10KG', CaseQty: 10, CaseDescription: '10 kg sack' },
         { ProductSupplierID: 505, SupplierID: 1, ProductID: 1005, SupplierProductCode: 'TOM-10KG', CaseQty: 10, CaseDescription: '10 kg box', IsUnavailable: true },
+        { ProductSupplierID: 506, SupplierID: 1, ProductID: 1006, SupplierProductCode: 'JAL-2KG', CaseQty: 1, CaseDescription: '2 kg tub' },
+        { ProductSupplierID: 507, SupplierID: 1, ProductID: 1007, SupplierProductCode: 'OLD-01', CaseQty: 1, CaseDescription: '' },
       ],
       2: [
         { ProductSupplierID: 601, SupplierID: 2, ProductID: 2001, SupplierProductCode: 'FOIL-500', CaseQty: 500, CaseDescription: 'Carton of 500' },
@@ -99,6 +108,9 @@ export function sampleData() {
       { ID: 2, VenueNo: 1, SupplierId: 1, SupplierProductCodeId: 502, ProductId: 1002, CaseCost: 18.5, UnitCost: 3.7 },
       { ID: 3, VenueNo: 1, SupplierId: 1, SupplierProductCodeId: 503, ProductId: 1003, CaseCost: 15.6, UnitCost: 0 },
       { ID: 4, VenueNo: 2, SupplierId: 1, SupplierProductCodeId: 501, ProductId: 1001, CaseCost: 47, UnitCost: 2.35 },
+      { ID: 8, VenueNo: 1, SupplierId: 1, SupplierProductCodeId: 506, ProductId: 1006, CaseCost: 22, UnitCost: 22 },
+      { ID: 9, VenueNo: 1, SupplierId: 1, SupplierProductCodeId: 507, ProductId: 1007, CaseCost: 5, UnitCost: 5 },
+      { ID: 10, VenueNo: 1, SupplierId: 2, SupplierProductCodeId: 603, ProductId: 2003, CaseCost: 40, UnitCost: 0.02 },
       { ID: 5, VenueNo: 1, SupplierId: 2, SupplierProductCodeId: 601, ProductId: 2001, CaseCost: 32, UnitCost: 0.064 },
       { ID: 6, VenueNo: 1, SupplierId: 2, SupplierProductCodeId: 602, ProductId: 2002, CaseCost: 96, UnitCost: 0.32 },
       { ID: 7, VenueNo: 1, SupplierId: 3, SupplierProductCodeId: 701, ProductId: 3001, CaseCost: 54, UnitCost: 9 },
@@ -180,7 +192,11 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
 
   app.get(`${base}/auth/clerk/currentUser`, (req, res) => res.json(req.account.clerk));
   app.get(`${base}/stock/stocklocations`, (req, res) => paged(req, res, state.data.stockLocations));
-  app.get(`${base}/lookup/products`, (req, res) => res.json(state.data.productNames));
+  app.get(`${base}/products/:id`, (req, res) => {
+    const product = state.data.products[Number(req.params.id)];
+    if (!product) return res.status(404).json({ Message: 'Product not found' });
+    res.json(product);
+  });
 
   app.get(`${base}/supplier`, (req, res) => paged(req, res, state.data.suppliers));
   app.get(`${base}/supplier/:id`, (req, res) => {

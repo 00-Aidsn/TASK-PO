@@ -122,7 +122,11 @@ export function createTaskClient({ baseUrl, apiKey, timeoutMs = 20000, pageSize 
 
     // --- Reference data ---------------------------------------------------
     getStockLocations: (token) => getAllPages('/stock/stocklocations', { token }),
-    getProductNames: (token) => request('GET', '/lookup/products', { token, query: { excludeSystemProducts: true } }),
+
+    // --- Products ---------------------------------------------------------
+    /** Product record (ProductBusinessModel): IsActive, ProductDescription, POSDisplay, ... */
+    getProduct: (token, productId, locationNo) =>
+      request('GET', `/products/${encodeURIComponent(productId)}`, { token, query: { locationNo } }),
 
     // --- Suppliers --------------------------------------------------------
     getSuppliers: (token) => getAllPages('/supplier', { token }),
