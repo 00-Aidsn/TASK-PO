@@ -19,6 +19,7 @@ beforeEach(() => {
   stack.mock.failItemForProductId = null;
   stack.mock.failPurchaseOrderPut = false;
   stack.mock.failDelete = false;
+  stack.mock.failStock = null;
   stack.mock.expireTokens = false;
   stack.mailer.fail = false;
   stack.mailer.sent.length = 0;
@@ -493,6 +494,100 @@ describe('live re-check when sending', () => {
     assert.equal(res.status, 201, res.text);
     const productCalls = stack.mock.requests.filter((r) => /^\/api\/v3\/products\/\d+$/.test(r.path));
     assert.deepEqual(productCalls.map((r) => r.path).sort(), ['/api/v3/products/1001', '/api/v3/products/1003']);
+  });
+});
+
+describe('stock levels', () => {
+  const stockOf = (res, code) => res.data.products.find((p) => p.code === code).stock;
+
+  test('products carry live stock on hand, min/max and a suggested number of cases', async () => {
+    const c = await stack.signIn();
+    stack.mock.requests.length = 0;
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.data.stockStatus, { available: true });
+
+    // Avocados: 15 on hand, min 40, max 100, 20 per case -> 85 short -> 5 cases
+    assert.deepEqual(stockOf(res, 'AVO-20'), { onHand: 15, min: 40, max: 100, belowMin: true, suggestedCases: 5 });
+    // Limes: 12 on hand, min 10, max 30, 5 per case -> 18 short -> 4 cases (not below min)
+    assert.deepEqual(stockOf(res, 'LIME-5KG'), { onHand: 12, min: 10, max: 30, belowMin: false, suggestedCases: 4 });
+    // Coriander: 30 on hand is above max 24 -> nothing to order
+    assert.equal(stockOf(res, 'COR-12').suggestedCases, 0);
+
+    const stockCalls = stack.mock.requests.filter((r) => r.path === '/api/v3/products/location/11/stock/products');
+    assert.equal(stockCalls.length, 1);
+    assert.deepEqual([...stockCalls[0].query.productIds].map(Number).sort(), [1001, 1002, 1003, 1004, 1005, 1006, 1007]);
+
+    const beach = await c.req('GET', '/api/suppliers/1/products?locationNo=12');
+    assert.deepEqual(stockOf(beach, 'AVO-20'), { onHand: 50, min: 40, max: 80, belowMin: false, suggestedCases: 2 });
+  });
+
+  test('no stock record or no max level means no suggestion', async () => {
+    const c = await stack.signIn();
+    const packaging = await c.req('GET', '/api/suppliers/2/products?locationNo=11');
+    // Foil: below min but no max set in TASK
+    assert.deepEqual(stockOf(packaging, 'FOIL-500'), { onHand: 200, min: 500, max: null, belowMin: true, suggestedCases: null });
+    assert.equal(stockOf(packaging, 'NAP-W').suggestedCases, 3);
+
+    const s = await startStack({ env: { REQUIRE_VENUE_COST: 'false' } });
+    try {
+      const c2 = await s.signIn();
+      const res = await c2.req('GET', '/api/suppliers/1/products?locationNo=11');
+      assert.equal(stockOf(res, 'ONR-10KG'), null); // onions have no stock record
+    } finally {
+      await s.close();
+    }
+  });
+
+  test('stock levels are read live', async () => {
+    const c = await stack.signIn();
+    await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    stack.mock.data.stock.find((s) => s.LocationNo === 11 && s.ProductId === 1001).Stock = 95;
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.deepEqual(stockOf(res, 'AVO-20'), { onHand: 95, min: 40, max: 100, belowMin: false, suggestedCases: 1 });
+  });
+
+  test('if TASK cannot return stock, products still load and ordering still works', async () => {
+    const c = await stack.signIn();
+    stack.mock.failStock = 500;
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.equal(res.status, 200);
+    assert.equal(res.data.products.length, 3);
+    assert.equal(res.data.stockStatus.available, false);
+    assert.match(res.data.stockStatus.message, /Stock service unavailable/);
+    assert.equal(stockOf(res, 'AVO-20'), null);
+
+    stack.mock.failStock = 403;
+    const denied = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.match(denied.data.stockStatus.message, /not allowed to read stock levels/);
+
+    const order = await c.req('POST', '/api/orders', {
+      supplierId: 1,
+      locationNo: 11,
+      lines: [{ productSupplierId: 501, cases: 1, caseCost: 45, unitCost: 2.25 }],
+    });
+    assert.equal(order.status, 201, order.text);
+  });
+
+  test('a TASK session expiry on the stock call signs the clerk out', async () => {
+    const c = await stack.signIn();
+    stack.mock.failStock = 440;
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.equal(res.status, 401);
+    assert.equal(res.data.code, 'session_expired');
+  });
+
+  test('stock is not requested when sending and not included in the supplier email', async () => {
+    const c = await stack.signIn();
+    stack.mock.requests.length = 0;
+    const res = await c.req('POST', '/api/orders', {
+      supplierId: 1,
+      locationNo: 11,
+      lines: [{ productSupplierId: 501, cases: 5, caseCost: 45, unitCost: 2.25 }],
+    });
+    assert.equal(res.status, 201, res.text);
+    assert.ok(!stack.mock.requests.some((r) => r.path.endsWith('/stock/products')));
+    assert.doesNotMatch(stack.mailer.sent[0].text, /on hand|min|max/i);
   });
 });
 

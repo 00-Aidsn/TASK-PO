@@ -101,6 +101,19 @@ This runs the app against an in-memory fake TASK API with demo data. Emails are 
 | `crew@example.com` | Can create only: POs are saved as Awaiting approval |
 | `viewer@example.com` | No PO permission: sign-in is refused |
 
+## Stock on hand and suggested quantities
+
+Each product row also shows the location's stock from TASK, read live at the same time as the product list:
+
+- **On hand:** current stock, with the TASK **min** and **max** levels underneath, and a **Below min** badge when stock is under the minimum.
+- **Suggested:** the whole number of cases needed to bring stock back up to the max level. Pressing it fills in that row's Cases; nothing is filled in automatically. It shows **At max** when no more is needed, and **—** when TASK has no stock record or no max level for the product.
+- **Below minimum only:** a filter that lists just the products under their minimum.
+
+Details:
+- Stock already on open POs is **not** counted. Suggestions are based on stock on hand only.
+- Stock is advisory. If TASK can't return stock levels, the products still load, the screen says "Stock levels unavailable", and POs can still be sent.
+- Stock levels are not included in the supplier email, and are not re-checked when sending.
+
 ## Configuration (`.env`)
 
 | Variable | Default | Purpose |
@@ -138,6 +151,7 @@ All calls go to `{TASK_BASE_URL}/api/v3`. Every call sends the `Key` header. Aft
 | Supplier products and case sizes (live) | `GET /supplier/{id}/productCodes` |
 | Supplier costs for a venue (live) | `GET /supplier/{id}/venueCosts?venueNo=` |
 | Product status and name (live) | `GET /products/{productId}?locationNo=` |
+| Stock on hand and min/max (live) | `GET /products/location/{locationNo}/stock/products?productIds=…` (50 products per call) |
 | PO templates | `GET /purchaseOrder/templates`, `GET /purchaseOrder/templates/{id}/items` |
 | Create / read / update / delete PO | `POST /purchaseOrder`, `GET`/`PUT`/`DELETE /purchaseOrder/{id}` |
 | PO lines | `POST`/`GET /purchaseOrder/{id}/items` |
@@ -160,8 +174,13 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - `IsActive` on that call means "can be ordered" for your business.
    - The hidden-product counts make sense. If many products show "no supplier cost for this venue", either load venue costs in TASK or set `REQUIRE_VENUE_COST=false`.
    - The product list loads quickly enough for your largest supplier. It makes one product call per supplier product, `PRODUCT_LOOKUP_CONCURRENCY` at a time.
-6. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
-7. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
+6. Confirm the stock figures:
+   - Clerks are allowed to call the stock endpoint. It is tagged `[TaskApp]` in the TASK spec; if access is denied, the screen says stock levels are unavailable.
+   - On hand matches what TASK shows for the store.
+   - TASK stock is counted in the same units as PO **Units**, i.e. one case = `CaseQty` units. The suggested cases assume this.
+   - Min and max levels are maintained in TASK for the products stores order.
+7. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
+8. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
 
 ## Development
 
@@ -174,6 +193,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - session expiry and idle timeout
 - live supplier and product checks: no caching, and hidden reasons
 - send-time re-checks for price, product status, supplier status and supplier email
+- stock levels, suggested cases, the 50-product chunking, and a stock failure not blocking orders
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard
 - that the API key and tokens never appear in responses
@@ -185,7 +205,7 @@ src/
   config.js        environment settings and validation
   taskClient.js    TASK API client (Key + Bearer headers, paging, error mapping)
   session.js       in-memory sessions, cookie, idle timeout
-  catalogue.js     locations; live suppliers, supplier products, venue costs and product status; templates
+  catalogue.js     locations; live suppliers, supplier products, venue costs, product status and stock; templates
   poService.js     order validation, PO creation with rollback, supplier email
   emailTemplate.js supplier email (HTML + text)
   mailer.js        SMTP or log-to-outbox

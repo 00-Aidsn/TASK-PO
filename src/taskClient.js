@@ -127,6 +127,12 @@ export function createTaskClient({ baseUrl, apiKey, timeoutMs = 20000, pageSize 
     /** Product record (ProductBusinessModel): IsActive, ProductDescription, POSDisplay, ... */
     getProduct: (token, productId, locationNo) =>
       request('GET', `/products/${encodeURIComponent(productId)}`, { token, query: { locationNo } }),
+    /** Stock on hand and min/max levels (StockModel[]) for a list of products at a location. */
+    getStockValues: (token, locationNo, productIds) =>
+      request('GET', `/products/location/${encodeURIComponent(locationNo)}/stock/products`, {
+        token,
+        query: { productIds },
+      }),
 
     // --- Suppliers --------------------------------------------------------
     getSuppliers: (token) => getAllPages('/supplier', { token }),

@@ -115,6 +115,29 @@ export function sampleData() {
       { ID: 6, VenueNo: 1, SupplierId: 2, SupplierProductCodeId: 602, ProductId: 2002, CaseCost: 96, UnitCost: 0.32 },
       { ID: 7, VenueNo: 1, SupplierId: 3, SupplierProductCodeId: 701, ProductId: 3001, CaseCost: 54, UnitCost: 9 },
     ],
+    // Stock on hand and min/max per location (StockModel). 1004 has no record; 2001 has no max.
+    stock: [
+      [11, 1001, 15, 40, 100],
+      [11, 1002, 12, 10, 30],
+      [11, 1003, 30, 12, 24],
+      [11, 2001, 200, 500, 0],
+      [11, 2002, 900, 300, 1200],
+      [11, 2003, 1000, 2000, 6000],
+      [11, 3001, 4, 6, 18],
+      [12, 1001, 50, 40, 80],
+    ].map(([LocationNo, ProductId, Stock, MinStockLevel, MaxStockLevel], i) => ({
+      StockId: i + 1,
+      ProductId,
+      LocationNo,
+      Stock,
+      MinStockLevel,
+      MaxStockLevel,
+      SpecialStockQuantity: 0,
+      SpecialStockOnHand: 0,
+      OnlineOrderingStock: 0,
+      AverageCost: 0,
+      LastCost: 0,
+    })),
     templates: [
       { PurchaseOrderID: 9001, SupplierID: 1, StockLocationNo: 11, CustomerPO: 'Weekly produce', OrderStatus: 88 },
       { PurchaseOrderID: 9002, SupplierID: 1, StockLocationNo: 11, CustomerPO: 'Old template', OrderStatus: 66 },
@@ -144,6 +167,7 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
     failItemForProductId: null,
     failPurchaseOrderPut: false,
     failDelete: false,
+    failStock: null, // HTTP status to return from the stock endpoint, e.g. 500 or 440
     expireTokens: false,
   };
 
@@ -192,6 +216,13 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
 
   app.get(`${base}/auth/clerk/currentUser`, (req, res) => res.json(req.account.clerk));
   app.get(`${base}/stock/stocklocations`, (req, res) => paged(req, res, state.data.stockLocations));
+  app.get(`${base}/products/location/:locationNo/stock/products`, (req, res) => {
+    if (state.failStock) return res.status(state.failStock).json({ Message: 'Stock service unavailable' });
+    const locationNo = Number(req.params.locationNo);
+    const raw = req.query.productIds;
+    const ids = new Set((Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]).map(Number));
+    res.json(state.data.stock.filter((s) => s.LocationNo === locationNo && ids.has(s.ProductId)));
+  });
   app.get(`${base}/products/:id`, (req, res) => {
     const product = state.data.products[Number(req.params.id)];
     if (!product) return res.status(404).json({ Message: 'Product not found' });

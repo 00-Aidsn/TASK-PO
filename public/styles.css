@@ -111,7 +111,8 @@ h2 { font-size: 1.1rem; }
   font-size: 0.85rem;
   flex: none;
 }
-.brand-title { font-weight: 700; }
+.brand-title { font-weight: 700; white-space: nowrap; }
+.who .btn-ghost { white-space: nowrap; }
 .brand-sub { color: var(--muted); font-size: 0.8rem; }
 .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .who-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
@@ -216,6 +217,22 @@ th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color
 .products tr.ordered { background: var(--accent-soft); }
 .products input.qty { width: 84px; text-align: right; min-height: 36px; padding: 6px 8px; }
 .products td.line-total { font-variant-numeric: tabular-nums; min-width: 90px; }
+.products td.stock { min-width: 110px; }
+.on-hand { font-variant-numeric: tabular-nums; font-weight: 600; }
+.stock-levels { display: block; font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.btn-suggest { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; white-space: nowrap; }
 
 /* ---------- order bar ---------- */
 .order-bar {
@@ -297,4 +314,9 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
   .summary { grid-template-columns: 1fr; gap: 0; }
   .summary dd { margin-bottom: 8px; }
   .actions .btn { flex: 1; }
+}
+
+@media (max-width: 480px) {
+  .brand-mark { display: none; }
+  .brand-sub { display: none; }
 }

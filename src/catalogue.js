@@ -36,6 +36,11 @@ function isRealDate(value) {
 }
 
 const isNotFound = (err) => err instanceof TaskApiError && err.kind === 'not_found';
+const isSessionError = (err) =>
+  err instanceof TaskApiError && (err.kind === 'unauthorized' || err.kind === 'session_expired');
+
+/** Product IDs per stock request, to keep URLs well under typical IIS query-string limits. */
+const STOCK_CHUNK_SIZE = 50;
 
 /** Runs fn over items with at most `limit` in flight. Stops starting new work after a failure. */
 export async function mapLimit(items, limit, fn) {
@@ -139,22 +144,73 @@ export async function getProductStatuses(task, session, productIds, locationNo, 
   return new Map(rows);
 }
 
+// ---------------------------------------------------------------- stock (live)
+/**
+ * Stock on hand and min/max levels for products at a location, read live from
+ * GET /products/location/{locationNo}/stock/products?productIds=...
+ * Returns Map<productId, { onHand, min, max }>. A min or max of 0 means "not set" (null).
+ */
+export async function getStockLevels(task, session, locationNo, productIds, { chunkSize = STOCK_CHUNK_SIZE, concurrency = 3 } = {}) {
+  const ids = [...new Set(productIds.map(Number))].filter(Number.isFinite);
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+  const results = await mapLimit(chunks, concurrency, (chunk) => task.getStockValues(session.accessToken, locationNo, chunk));
+
+  const positive = (v) => (toNumber(v) > 0 ? toNumber(v) : null);
+  const levels = new Map();
+  for (const rows of results) {
+    for (const r of Array.isArray(rows) ? rows : []) {
+      if (r?.ProductId == null) continue;
+      if (r.LocationNo != null && Number(r.LocationNo) !== locationNo) continue;
+      levels.set(Number(r.ProductId), { onHand: toNumber(r.Stock), min: positive(r.MinStockLevel), max: positive(r.MaxStockLevel) });
+    }
+  }
+  return levels;
+}
+
+/**
+ * Whole cases needed to bring stock on hand up to the max level.
+ * null when there is no basis for a suggestion (no stock figure or no max); 0 when already at max.
+ */
+export function suggestCases({ onHand, max, caseQty }) {
+  if (onHand === null || onHand === undefined || max === null || max === undefined) return null;
+  if (onHand >= max) return 0;
+  const perCase = caseQty > 0 ? caseQty : 1;
+  return Math.ceil((max - onHand) / perCase - 1e-9);
+}
+
+function stockFailureMessage(err) {
+  if (err instanceof TaskApiError && err.kind === 'forbidden') {
+    return 'your TASK account is not allowed to read stock levels';
+  }
+  return err instanceof TaskApiError ? err.message : 'TASK did not return stock levels';
+}
+
 /**
  * Products the supplier can supply to this location, built live from:
  *   GET /supplier/{id}/productCodes            supplier code, case size, availability
  *   GET /supplier/{id}/venueCosts?venueNo=     case and unit cost (ex GST) for the venue
  *   GET /products/{productId}?locationNo=      product active status and name
+ *   GET /products/location/{loc}/stock/products  stock on hand and min/max (only with includeStock)
  *
  * Returns {
  *   items:   orderable products (sorted by name),
  *   byProductSupplierId: Map of orderable products,
  *   all:     Map of every supplier product checked, each with `hiddenReason` (null when orderable),
  *   hidden:  counts by reason,
- *   checkedAt: ISO time the data was read
+ *   checkedAt: ISO time the data was read,
+ *   stockStatus: { available, message? } (only with includeStock)
  * }
+ * With includeStock, each item also has `stock`: { onHand, min, max, belowMin, suggestedCases } or null.
+ * Stock is advisory: if TASK cannot return it, products are still returned (stockStatus.available = false).
  */
 export async function getCatalogue(task, session, supplierId, location, options = {}) {
-  const { requireVenueCost = true, productLookupConcurrency = 6, onlyProductSupplierIds = null } = options;
+  const {
+    requireVenueCost = true,
+    productLookupConcurrency = 6,
+    onlyProductSupplierIds = null,
+    includeStock = false,
+  } = options;
   const token = session.accessToken;
   const [codes, costs] = await Promise.all([
     task.getSupplierProductCodes(token, supplierId),
@@ -179,13 +235,22 @@ export async function getCatalogue(task, session, supplierId, location, options 
   );
   if (onlyProductSupplierIds) candidates = candidates.filter((c) => onlyProductSupplierIds.has(c.ProductSupplierID));
 
-  const statuses = await getProductStatuses(
-    task,
-    session,
-    candidates.map((c) => c.ProductID),
-    location.locationNo,
-    productLookupConcurrency,
-  );
+  const productIds = candidates.map((c) => c.ProductID);
+  // Stock levels are read in parallel with product status; a stock failure never blocks ordering.
+  const stockRequest = includeStock
+    ? getStockLevels(task, session, location.locationNo, productIds).then(
+        (levels) => ({ levels, status: { available: true } }),
+        (err) => {
+          if (isSessionError(err)) throw err;
+          console.error(`[stock] location ${location.locationNo}: ${err.message}`);
+          return { levels: new Map(), status: { available: false, message: stockFailureMessage(err) } };
+        },
+      )
+    : null;
+  const [statuses, stock] = await Promise.all([
+    getProductStatuses(task, session, productIds, location.locationNo, productLookupConcurrency),
+    stockRequest,
+  ]);
 
   const now = Date.now();
   const all = new Map();
@@ -225,6 +290,16 @@ export async function getCatalogue(task, session, supplierId, location, options 
       unitCost,
       hiddenReason,
     };
+    if (stock) {
+      const level = stock.levels.get(productId);
+      entry.stock = level
+        ? {
+            ...level,
+            belowMin: level.min !== null && level.onHand !== null && level.onHand < level.min,
+            suggestedCases: suggestCases({ onHand: level.onHand, max: level.max, caseQty }),
+          }
+        : null;
+    }
     all.set(entry.productSupplierId, entry);
     if (hiddenReason) hidden[hiddenReason] += 1;
     else items.push(entry);
@@ -237,6 +312,7 @@ export async function getCatalogue(task, session, supplierId, location, options 
     all,
     hidden,
     checkedAt: new Date().toISOString(),
+    stockStatus: stock ? stock.status : undefined,
   };
 }
 

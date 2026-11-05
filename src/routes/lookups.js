@@ -35,7 +35,8 @@ export function lookupRoutes({ task, config }) {
     const location = await findLocation(task, req.session, locationNo);
     if (!location) return res.status(403).json({ error: 'You do not have access to that location.' });
 
-    // Live from TASK: supplier status and email, supplier product codes, venue costs, product status.
+    // Live from TASK: supplier status and email, supplier product codes, venue costs, product status,
+    // and stock on hand with min/max levels for the location.
     const supplier = await getSupplierLive(task, req.session, supplierId);
     if (!supplier || !supplier.active) {
       return res.status(409).json({
@@ -43,12 +44,16 @@ export function lookupRoutes({ task, config }) {
         error: `${supplier?.name || 'This supplier'} is no longer active in TASK. Choose another supplier.`,
       });
     }
-    const catalogue = await getCatalogue(task, req.session, supplierId, location, config.catalogue);
+    const catalogue = await getCatalogue(task, req.session, supplierId, location, {
+      ...config.catalogue,
+      includeStock: true,
+    });
     res.json({
       supplier: { id: supplier.id, name: supplier.name, email: supplier.email },
       products: catalogue.items.map(publicItem),
       hidden: catalogue.hidden,
       checkedAt: catalogue.checkedAt,
+      stockStatus: catalogue.stockStatus,
       venueNo: location.venueNo,
     });
   });

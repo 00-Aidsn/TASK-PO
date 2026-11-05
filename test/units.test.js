@@ -5,7 +5,7 @@ import { createSessionStore, parseCookies } from '../src/session.js';
 import { createTaskClient, TaskApiError } from '../src/taskClient.js';
 import { loadConfig } from '../src/config.js';
 import { validateOrderInput, todayIn } from '../src/poService.js';
-import { mapLimit } from '../src/catalogue.js';
+import { getStockLevels, mapLimit, suggestCases } from '../src/catalogue.js';
 
 describe('email template', () => {
   const base = {
@@ -176,6 +176,38 @@ describe('order validation', () => {
       /highlighted/,
     );
     assert.throws(() => validateOrderInput({ supplierId: 1, locationNo: 2, deliveryDate: '2026-02-30', lines: [{ productSupplierId: 5, cases: 1 }] }, { today }));
+  });
+});
+
+describe('stock suggestions', () => {
+  test('suggests whole cases up to the max level', () => {
+    assert.equal(suggestCases({ onHand: 15, max: 100, caseQty: 20 }), 5); // 85 short
+    assert.equal(suggestCases({ onHand: 60, max: 100, caseQty: 20 }), 2); // exactly 40 short
+    assert.equal(suggestCases({ onHand: -10, max: 20, caseQty: 10 }), 3); // oversold stock
+    assert.equal(suggestCases({ onHand: 0.7, max: 3, caseQty: 0.5 }), 5); // fractional case sizes
+    assert.equal(suggestCases({ onHand: 4, max: 6, caseQty: 0 }), 2); // missing case size counts as 1
+  });
+
+  test('no suggestion without stock or a max; zero when at or above max', () => {
+    assert.equal(suggestCases({ onHand: null, max: 100, caseQty: 20 }), null);
+    assert.equal(suggestCases({ onHand: 10, max: null, caseQty: 20 }), null);
+    assert.equal(suggestCases({ onHand: 100, max: 100, caseQty: 20 }), 0);
+    assert.equal(suggestCases({ onHand: 120, max: 100, caseQty: 20 }), 0);
+  });
+
+  test('stock requests are split into chunks of 50 products', async () => {
+    const calls = [];
+    const task = {
+      async getStockValues(token, locationNo, ids) {
+        calls.push(ids.length);
+        return ids.map((id) => ({ ProductId: id, LocationNo: locationNo, Stock: id, MinStockLevel: 0, MaxStockLevel: 10 }));
+      },
+    };
+    const ids = Array.from({ length: 120 }, (_, i) => i + 1);
+    const levels = await getStockLevels(task, { accessToken: 't' }, 11, [...ids, 5, 6]);
+    assert.deepEqual(calls.sort((a, b) => b - a), [50, 50, 20]);
+    assert.equal(levels.size, 120);
+    assert.deepEqual(levels.get(7), { onHand: 7, min: null, max: 10 });
   });
 });
 

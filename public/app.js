@@ -18,6 +18,7 @@
     productsReady: false,
     hidden: null,
     checkedAt: null,
+    stockStatus: null,
     qty: new Map(), // productSupplierId -> { cases, units }
     templates: [],
     loadSeq: 0,
@@ -174,12 +175,14 @@
     state.productsReady = false;
     state.hidden = null;
     state.checkedAt = null;
+    state.stockStatus = null;
     state.templates = [];
     state.qty.clear();
     state.lastResult = null;
     showBuilderNotice('');
     for (const id of ['delivery-date', 'customer-po', 'ship-to', 'comments', 'product-search']) $(id).value = '';
     $('only-ordered').checked = false;
+    $('below-min').checked = false;
   }
 
   async function onSignedIn(clerk) {
@@ -357,6 +360,7 @@
     state.productsReady = false;
     state.hidden = null;
     state.checkedAt = null;
+    state.stockStatus = null;
     state.templates = [];
     setMessage($('builder-error'), '');
     renderBuilder();
@@ -374,6 +378,7 @@
       state.products = live.products;
       state.hidden = live.hidden;
       state.checkedAt = live.checkedAt;
+      state.stockStatus = live.stockStatus || null;
       state.templates = templates;
       state.productsReady = true;
 
@@ -434,6 +439,38 @@
     });
   }
 
+  // ---- stock (advisory: from TASK stock on hand and min/max levels at this location)
+  function stockCell(p) {
+    const s = p.stock;
+    if (!s || s.onHand === null) return el('span', { className: 'muted', text: '—' });
+    const levels = [s.min !== null ? `min ${fmtQty(s.min)}` : '', s.max !== null ? `max ${fmtQty(s.max)}` : '']
+      .filter(Boolean)
+      .join(' · ');
+    return [
+      el('span', { className: 'on-hand', text: fmtQty(s.onHand) }),
+      s.belowMin ? el('span', { className: 'badge', text: 'Below min' }) : null,
+      levels ? el('span', { className: 'stock-levels', text: levels }) : null,
+    ];
+  }
+
+  function suggestionCell(p) {
+    const s = p.stock;
+    if (!s || s.suggestedCases === null || s.suggestedCases === undefined) {
+      return el('span', { className: 'muted', text: '—' });
+    }
+    if (s.suggestedCases === 0) return el('span', { className: 'muted', text: 'At max' });
+    const n = s.suggestedCases;
+    const label = `${n} ${n === 1 ? 'case' : 'cases'}`;
+    return el('button', {
+      type: 'button',
+      className: 'btn btn-suggest',
+      text: label,
+      title: `Set cases to ${label} (brings stock up to the max level of ${fmtQty(s.max)})`,
+      'aria-label': `Use suggested quantity for ${p.name}: ${label}`,
+      dataset: { psid: String(p.productSupplierId), cases: String(n) },
+    });
+  }
+
   function renderBuilder() {
     const ready = Boolean(state.locationNo && state.supplierId);
     show($('products-card'), ready);
@@ -461,9 +498,11 @@
     }
     const term = $('product-search').value.trim().toLowerCase();
     const onlyOrdered = $('only-ordered').checked;
+    const belowMinOnly = $('below-min').checked;
     const rows = state.products.filter((p) => {
       const q = state.qty.get(p.productSupplierId);
       if (onlyOrdered && !(q && (q.cases > 0 || q.units > 0))) return false;
+      if (belowMinOnly && !(p.stock && p.stock.belowMin)) return false;
       if (!term) return true;
       return p.name.toLowerCase().includes(term) || p.code.toLowerCase().includes(term);
     });
@@ -485,6 +524,8 @@
           el('td', { className: 'name', 'data-label': 'Product', text: p.name }),
           el('td', { className: 'pack', 'data-label': 'Pack', text: packLabel(p) }),
           el('td', { className: 'num', 'data-label': 'Case cost', text: fmtMoney(p.caseCost) }),
+          el('td', { className: 'num stock', 'data-label': 'On hand' }, stockCell(p)),
+          el('td', { className: 'num', 'data-label': 'Suggested' }, suggestionCell(p)),
           el('td', { className: 'num', 'data-label': 'Cases' }, qtyInput(p, 'cases')),
           el('td', { className: 'num', 'data-label': 'Units' }, qtyInput(p, 'units')),
           el('td', { className: 'num line-total', 'data-label': 'Line ex GST', text: ordered ? fmtMoney(lineTotal(p, q)) : '' }),
@@ -507,8 +548,23 @@
       const total = Object.values(state.hidden).reduce((a, b) => a + b, 0);
       text += ` ${total} supplier ${total === 1 ? 'product is' : 'products are'} not shown: ${parts.join('; ')}.`;
     }
+    if (state.stockStatus && state.stockStatus.available === false) {
+      text += ` Stock levels unavailable: ${state.stockStatus.message}.`;
+    } else if (state.stockStatus) {
+      text += ' Stock levels included.';
+    }
     node.textContent = text;
   }
+
+  // One click applies a suggestion: sets that row's Cases (Units are left as they are).
+  $('products-body').addEventListener('click', (event) => {
+    const button = event.target.closest('button.btn-suggest');
+    if (!button) return;
+    const input = button.closest('tr').querySelector('input.qty[data-field="cases"]');
+    input.value = button.dataset.cases;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  });
 
   $('products-body').addEventListener('input', (event) => {
     const input = event.target;
@@ -533,6 +589,7 @@
 
   $('product-search').addEventListener('input', renderProducts);
   $('only-ordered').addEventListener('change', renderProducts);
+  $('below-min').addEventListener('change', renderProducts);
 
   function orderLines() {
     return state.products
@@ -770,6 +827,7 @@
     state.qty.clear();
     for (const id of ['delivery-date', 'customer-po', 'ship-to', 'comments', 'product-search']) $(id).value = '';
     $('only-ordered').checked = false;
+    $('below-min').checked = false;
     if ($('template').options.length) $('template').value = '';
     showView('builder');
     renderBuilder();

@@ -79,6 +79,7 @@
           <div class="filters">
             <input type="search" id="product-search" placeholder="Search product or code" aria-label="Search products">
             <label class="check"><input type="checkbox" id="only-ordered"> On this order only</label>
+            <label class="check"><input type="checkbox" id="below-min"> Below minimum only</label>
             <button type="button" class="btn" id="refresh-products">Refresh from TASK</button>
           </div>
         </div>
@@ -92,6 +93,8 @@
                 <th scope="col">Product</th>
                 <th scope="col">Pack</th>
                 <th scope="col" class="num">Case cost</th>
+                <th scope="col" class="num" title="Stock on hand at this location, with TASK min and max levels">On hand</th>
+                <th scope="col" class="num" title="Whole cases to bring stock up to the max level">Suggested</th>
                 <th scope="col" class="num">Cases</th>
                 <th scope="col" class="num">Units</th>
                 <th scope="col" class="num">Line ex GST</th>
