@@ -40,7 +40,7 @@ export function publicClerk(clerk) {
   };
 }
 
-export function authRoutes({ task, config }) {
+export function authRoutes({ task, config, settings }) {
   const router = Router();
   const limiter = createLoginLimiter();
 
@@ -52,6 +52,9 @@ export function authRoutes({ task, config }) {
       sessionIdleMinutes: config.sessionIdleMinutes,
       showPrices: config.mail.showPrices,
       mailMode: config.mail.mode,
+      // Live TASK connection: an administrator may change it at any time.
+      environmentName: settings ? settings.current().environmentName : '',
+      configured: settings ? settings.publicView().configured : true,
     });
   });
 

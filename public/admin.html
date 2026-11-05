@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>TASK PO Admin</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">PO</span>
+      <div>
+        <div class="brand-title">Admin</div>
+        <div class="brand-sub">TASK connection settings</div>
+      </div>
+    </div>
+    <div class="who" id="who" hidden>
+      <span class="who-name" id="who-name"></span>
+      <button type="button" class="btn btn-ghost" id="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="signed-out" class="view" hidden>
+      <div class="card signin-card">
+        <h1>Admin sign-in</h1>
+        <p class="muted">Only approved administrators can open this page. Sign in with your Mad Mex Microsoft account.</p>
+        <div class="notice" id="signout-notice" role="status" hidden></div>
+        <div class="error" id="signin-error" role="alert" hidden></div>
+        <a class="btn btn-primary btn-block" id="signin-link" href="/admin/login">Sign in with Microsoft</a>
+        <p class="hint"><a href="/">Back to purchase orders</a></p>
+      </div>
+    </section>
+
+    <section id="signed-in" class="view" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2 class="card-title">TASK connection in use</h2>
+          <button type="button" class="btn" id="test-current">Test current connection</button>
+        </div>
+        <dl class="summary" id="current"></dl>
+        <div class="notice" id="current-test" role="status" hidden></div>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">Change the connection</h2>
+        <p class="muted small">
+          Changes apply straight away to every part of the app: ordering, stock levels and receiving.
+          Clerks who are signed in are signed out, and sign in again against the new connection.
+          A new address or key is only saved after TASK accepts it.
+        </p>
+        <form id="settings-form" novalidate>
+          <label class="field narrow">
+            <span>Environment name (shown to clerks)</span>
+            <input id="env-name" maxlength="40" placeholder="e.g. UAT or Production" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>TASK API address</span>
+            <input id="base-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://madmexuatapi.xchangefusion.com">
+            <small class="hint" id="allowed-hosts"></small>
+          </label>
+          <label class="field">
+            <span>TASK API key</span>
+            <input id="api-key" type="password" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="Leave blank to keep the current key">
+          </label>
+          <label class="check"><input type="checkbox" id="show-key"> Show the key while typing</label>
+          <div class="error" id="form-error" role="alert" hidden></div>
+          <div class="notice" id="form-result" role="status" hidden></div>
+          <div class="actions">
+            <button type="button" class="btn" id="test-new">Test these settings</button>
+            <button type="submit" class="btn btn-primary" id="save">Save changes</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2 class="card-title">Change history</h2>
+          <button type="button" class="btn" id="refresh-audit">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table class="history">
+            <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">What</th></tr></thead>
+            <tbody id="audit"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="muted small" id="admin-oid"></p>
+    </section>
+  </main>
+</body>
+</html>

@@ -10,10 +10,31 @@ import { lookupRoutes } from './routes/lookups.js';
 import { orderRoutes } from './routes/orders.js';
 import { receivingRoutes } from './routes/receiving.js';
 import { ReceiptError } from './receiving.js';
+import { adminRoutes } from './routes/admin.js';
+import { createSettingsStore } from './settings.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-export function createApp({ config, task, mailer, store = createSessionStore({ idleMinutes: config.sessionIdleMinutes }) }) {
+/**
+ * @param {object} deps
+ * @param {object} [deps.settings]  live TASK connection settings (see settings.js); defaults to the .env values
+ * @param {object} [deps.entra]     Entra sign-in (see admin/entra.js); required when the admin panel is enabled
+ */
+export function createApp({
+  config,
+  task,
+  mailer,
+  store = createSessionStore({ idleMinutes: config.sessionIdleMinutes }),
+  settings = createSettingsStore({
+    defaults: { baseUrl: config.task.baseUrl, apiKey: config.task.apiKey, environmentName: config.task.environmentName },
+    allowedHosts: config.task.allowedHosts,
+    production: config.production,
+  }),
+  entra = null,
+}) {
+  // A new TASK URL or key signs every clerk out: their sessions belong to the old connection.
+  settings.onChange(() => store.clear());
+
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
@@ -46,7 +67,11 @@ export function createApp({ config, task, mailer, store = createSessionStore({ i
   app.use('/api', express.json({ limit: '200kb' }));
   app.use('/api', sessionMiddleware({ store, cookieSecure: config.cookieSecure }));
 
-  app.use('/api', authRoutes({ task, config }));
+  if (config.admin.enabled) {
+    if (!entra) throw new Error('The admin panel is enabled but Entra sign-in was not set up');
+    app.use(adminRoutes({ config, settings, entra, clerkStore: store }));
+  }
+  app.use('/api', authRoutes({ task, config, settings }));
   app.use('/api', lookupRoutes({ task, config }));
   app.use('/api', orderRoutes({ task, mailer, config }));
   app.use('/api', receivingRoutes({ task, config }));
@@ -69,6 +94,9 @@ export function createApp({ config, task, mailer, store = createSessionStore({ i
     }
     if (err instanceof OrderError) {
       return res.status(502).json({ error: err.message, poId: err.poId, rolledBack: err.rolledBack });
+    }
+    if (err instanceof TaskApiError && err.kind === 'not_configured') {
+      return res.status(503).json({ code: 'not_configured', error: err.message });
     }
     if (err instanceof TaskApiError) {
       if (err.kind === 'unauthorized' || err.kind === 'session_expired') {

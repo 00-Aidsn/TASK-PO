@@ -108,6 +108,8 @@ This runs the app against an in-memory fake TASK API with demo data. Emails are 
 
 Demo mode includes some open POs to receive. Completing a demo invoice adds its stock to on hand, so you can watch the order screen's stock figures change.
 
+Demo mode also runs the **admin panel** at `/admin` with a fake Microsoft sign-in page. Pick "Alex Admin" to get in, or "Sam Staff" to see a refusal. The console prints a second fake TASK address and key you can switch to.
+
 ## Stock on hand and suggested quantities
 
 Each product row also shows the location's stock from TASK, read live at the same time as the product list:
@@ -144,6 +146,48 @@ Safeguards:
 - **Partial failures:** if completing the invoice or updating the PO fails, the receipt is kept and the clerk is told exactly what to finish in TASK.
 - **Double submits:** pressing Receive twice, or a network retry, doesn't receive the delivery twice.
 
+## Admin panel (Microsoft Entra sign-in)
+
+`/admin` is a separate page for managing the TASK connection. Only approved administrators can open it, by signing in with their Mad Mex Microsoft account. From it you can:
+
+- see the **TASK API address**, **environment name** and **API key** in use. Only the key's last 4 characters are ever shown.
+- **test** the current connection, or a new address and key, against TASK (`GET /auth/currentApp`) without saving anything.
+- **change** the address, key and environment name. A new address or key is saved only if TASK accepts it.
+- see the **change history**: sign-ins, refused sign-ins, and every change, with who made it and when.
+
+**How a change applies everywhere:**
+- Every TASK call reads the current address and key, so a change applies at once to sign-in, ordering, stock levels and receiving.
+- Every signed-in clerk is signed out, because their TASK sessions belong to the old connection. They sign in again against the new one.
+- The clerk screen shows the environment name, such as **UAT**, next to the title.
+
+### Security
+- **Who gets in.** Microsoft sign-in uses OpenID Connect with PKCE, state and nonce checks, and only accepts tokens issued by your tenant for this app. The person must then be on the allow-list: `ADMIN_ALLOWED_OBJECT_IDS` (recommended, because object IDs never change) and/or `ADMIN_ALLOWED_USERS`. For a second layer, turn on **Assignment required** in Entra and assign only yourself (see below).
+- **The key at rest.** The API key is encrypted with AES-256-GCM using `SETTINGS_ENCRYPTION_KEY`, in `DATA_DIR/settings.json`. The file and the history log are readable only by the app's user, and neither ever contains the key in plain text.
+- **Approved servers only.** The address can only point to servers in `TASK_ALLOWED_HOSTS` (default `*.xchangefusion.com`), and must use https. IT sets this list outside the panel. This matters because the address decides where clerk passwords are sent.
+- **Admin sessions.** They are separate from clerk sessions. The cookie is `HttpOnly` and `SameSite=Strict`. A session ends after 30 minutes idle or 8 hours in total, and changes from other websites are blocked. Signing out also signs you out of Microsoft.
+- **Storage.** Settings are kept in `DATA_DIR`, which must be on persistent storage. If you run more than one copy of the app, the others only pick up a change when restarted.
+
+### Setting up Entra (once, in the Microsoft Entra admin center)
+1. **App registrations → New registration.**
+   - Name: e.g. "TASK PO admin".
+   - Supported account types: **this organizational directory only**.
+   - Redirect URI: **Web**, `https://<this app's address>/admin/callback`.
+2. **Overview:**
+   - copy the **Application (client) ID** to `ENTRA_CLIENT_ID`;
+   - copy the **Directory (tenant) ID** to `ENTRA_TENANT_ID`.
+3. **Certificates & secrets → New client secret.** Put the secret's value in `ENTRA_CLIENT_SECRET` (in `.env` or your secret store; never in chat or email). Note when it expires.
+4. **Enterprise applications** → the new app:
+   - **Properties → Assignment required = Yes**;
+   - **Users and groups** → add only the administrators.
+5. In `.env`, set:
+   - `PUBLIC_BASE_URL` to the app's https address;
+   - `ADMIN_ALLOWED_USERS` to your user name;
+   - `SETTINGS_ENCRYPTION_KEY` to the output of `openssl rand -base64 32`.
+
+   Restart the app, sign in at `/admin`, then copy the **object ID** shown at the bottom of the panel into `ADMIN_ALLOWED_OBJECT_IDS` and restart again.
+
+No API permissions are needed beyond the default sign-in (`openid profile email`).
+
 ## Configuration (`.env`)
 
 | Variable | Default | Purpose |
@@ -160,6 +204,14 @@ Safeguards:
 | `TRUST_PROXY` | (blank) | Set if behind a reverse proxy, e.g. `1` |
 | `DISPLAY_TIMEZONE` | `Australia/Sydney` | Time zone for dates in the UI and emails |
 | `COMPANY_NAME` | `Mad Mex` | Shown in the header and emails |
+| `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` | (blank) | Turn on the admin panel. See [Admin panel](#admin-panel-microsoft-entra-sign-in) |
+| `PUBLIC_BASE_URL` | (blank) | The app's https address (admin sign-in returns to `/admin/callback`) |
+| `ADMIN_ALLOWED_OBJECT_IDS` / `ADMIN_ALLOWED_USERS` | (blank) | Who may open the admin panel |
+| `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `30` / `8` | Admin session limits |
+| `SETTINGS_ENCRYPTION_KEY` | (blank) | 32 random bytes (base64) that encrypt the saved API key |
+| `DATA_DIR` | `data` | Saved settings and admin change history (persistent storage) |
+| `TASK_ALLOWED_HOSTS` | `*.xchangefusion.com` | Servers the TASK address may point at (not editable in the panel) |
+| `TASK_ENVIRONMENT_NAME` | from the URL | Environment name shown to clerks (editable in the panel) |
 | `REQUIRE_VENUE_COST` | `true` | Only offer products that have a supplier cost for the location's venue |
 | `PRODUCT_LOOKUP_CONCURRENCY` | `6` | Parallel `GET /products/{id}` calls when checking product status (1-20) |
 | `MAIL_MODE` | `log` | `log` writes emails to `MAIL_OUTBOX_DIR`; `smtp` sends them |
@@ -175,6 +227,7 @@ All calls go to `{TASK_BASE_URL}/api/v3`. Every call sends the `Key` header. Aft
 | Purpose | Endpoint |
 |---|---|
 | Clerk sign-in | `POST /auth/clerk/login` with `{ Login, Password, LoginType }` |
+| Admin connection test (API key only) | `GET /auth/currentApp` |
 | Clerk profile and permissions | `GET /auth/clerk/currentUser` |
 | Locations (and their venue) | `GET /stock/stocklocations` |
 | Suppliers (live, active only) | `GET /supplier`, `GET /supplier/{id}` |
@@ -213,7 +266,11 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - Min and max levels are maintained in TASK for the products stores order.
 7. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
 8. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
-9. Confirm receiving with a test PO, in this order:
+9. Confirm the admin panel:
+   - Only you can sign in. Ask a colleague to try `/admin`: they should be refused, and the refusal should appear in the change history.
+   - **Test current connection** succeeds with the UAT key, and a wrong key is refused.
+   - Switching from UAT to production signs clerks out, and their next sign-in goes to production. Switch back afterwards.
+10. Confirm receiving with a test PO, in this order:
    - **Booking stock in:** completing an invoice (`PUT /invoice/{id}` with `IsComplete: true`) adds the stock. Stock on hand should rise by the units received.
    - **No double counting:** TASK does **not** also update the PO's received quantities when an invoice linked to it (`PurchaseOrderNo`) is completed. The app updates the PO itself; if TASK does it too, the PO would be counted twice and the app's PO update should be removed.
    - **Invoice item fields:** `Cost` is the case cost ex GST, `UnitCost` the unit cost ex GST, and `CaseCount`/`UnitCount` the received quantities. Check the invoice total in TASK.
@@ -234,6 +291,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - live supplier and product checks: no caching, and hidden reasons
 - send-time re-checks for price, product status, supplier status and supplier email
 - stock levels, suggested cases, the 50-product chunking, and a stock failure not blocking orders
+- admin panel: Entra sign-in (PKCE, state, nonce, replayed or forged callbacks, other users and other tenants refused, object-ID allow-list); key masking; connection tests; approved hosts only; saves that TASK rejects aren't stored; a change switching every TASK call to the new server and key and signing clerks out; encryption at rest and restart; change history without key material; changes from other websites blocked
 - receiving: permissions; the open PO list; full, short and closed-short deliveries; invoices completed or left for a manager; cost changes; items not on the PO; deliveries with no PO; duplicate invoice numbers; rollback and partial failures; validation; double submits
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard
@@ -249,10 +307,12 @@ src/
   catalogue.js     locations; live suppliers, supplier products, venue costs, product status and stock; templates
   poService.js     order validation, PO creation with rollback, supplier email
   receiving.js     receipt validation, invoice + PO updates with rollback
+  settings.js      live TASK URL/key/environment, encrypted at rest, change history
+  admin/entra.js   Microsoft Entra ID sign-in (OpenID Connect) and the admin allow-list
   emailTemplate.js supplier email (HTML + text)
   mailer.js        SMTP or log-to-outbox
-  routes/          /api/login, /api/logout, /api/me, lookups, orders, receiving
-public/            browser UI (plain HTML/CSS/JS, no build step)
-test/              tests and the fake TASK API
+  routes/          /api/login, /api/logout, /api/me, lookups, orders, receiving, admin
+public/            browser UI (plain HTML/CSS/JS, no build step); admin.html + admin.js for /admin
+test/              tests, the fake TASK API and a fake Microsoft Entra
 scripts/dev-mock.js demo mode
 ```

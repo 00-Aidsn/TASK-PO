@@ -3,6 +3,8 @@ import { createTaskClient } from './taskClient.js';
 import { createMailer } from './mailer.js';
 import { createSessionStore } from './session.js';
 import { createApp } from './app.js';
+import { createSettingsStore } from './settings.js';
+import { createEntraAuth } from './admin/entra.js';
 
 let config;
 try {
@@ -13,14 +15,32 @@ try {
   process.exit(1);
 }
 
-const task = createTaskClient(config.task);
+let settings;
+try {
+  settings = createSettingsStore({
+    defaults: { baseUrl: config.task.baseUrl, apiKey: config.task.apiKey, environmentName: config.task.environmentName },
+    dataDir: config.admin.enabled ? config.settings.dataDir : null,
+    encryptionKey: config.admin.enabled ? config.settings.encryptionKey : null,
+    allowedHosts: config.task.allowedHosts,
+    production: config.production,
+  });
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
+// Every TASK call reads the current URL and key, so changes in the admin panel apply everywhere at once.
+const task = createTaskClient({ ...config.task, getConnection: settings.connection });
 const mailer = createMailer(config.mail);
 const store = createSessionStore({ idleMinutes: config.sessionIdleMinutes });
 setInterval(() => store.sweep(), 60_000).unref();
 
-const app = createApp({ config, task, mailer, store });
+const entra = config.admin.enabled ? createEntraAuth(config.admin) : null;
+const app = createApp({ config, task, mailer, store, settings, entra });
 app.listen(config.port, () => {
   console.log(`TASK purchase orders running on http://localhost:${config.port}`);
-  console.log(`  TASK API: ${config.task.baseUrl}`);
+  const c = settings.current();
+  console.log(`  TASK API: ${c.baseUrl || '(not set)'} [${c.environmentName || 'environment not named'}] from ${c.source === 'admin' ? 'admin panel' : '.env'}`);
+  console.log(`  Admin:    ${config.admin.enabled ? `${config.admin.publicBaseUrl}/admin (Microsoft Entra sign-in)` : 'disabled (set ENTRA_* to enable)'}`);
   console.log(`  Email:    ${config.mail.mode === 'smtp' ? `SMTP via ${config.mail.smtp.host}` : `log only (written to ./${config.mail.outboxDir})`}`);
 });

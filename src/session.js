@@ -33,6 +33,12 @@ export function createSessionStore({ idleMinutes, now = () => Date.now() }) {
     destroy(id) {
       if (id) sessions.delete(id);
     },
+    /** Ends every session (e.g. after the TASK connection settings change). Returns how many ended. */
+    clear() {
+      const n = sessions.size;
+      sessions.clear();
+      return n;
+    },
     sweep() {
       for (const [id, s] of sessions) if (expired(s)) sessions.delete(id);
     },
@@ -74,6 +80,8 @@ export function sessionMiddleware({ store, cookieSecure }) {
     const session = store.get(id);
     req.sessionId = session ? id : null;
     req.session = session;
+    // A cookie for a session that no longer exists: it timed out, or was ended by an administrator.
+    req.sessionEnded = Boolean(id) && !session;
     res.startSession = (data) => {
       if (req.sessionId) store.destroy(req.sessionId);
       const newId = store.create(data);
@@ -101,6 +109,9 @@ export function requirePermission(flag, message) {
 
 export function requireClerk(req, res, next) {
   if (!req.session) {
+    if (req.sessionEnded) {
+      return res.status(401).json({ code: 'session_expired', error: 'Your session has ended. Please sign in again.' });
+    }
     return res.status(401).json({ code: 'signed_out', error: 'Please sign in with your TASK clerk login.' });
   }
   next();

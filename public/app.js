@@ -170,11 +170,13 @@
     if (name === 'signin') setTimeout(() => ($('login').value ? $('password') : $('login')).focus(), 0);
   }
 
+  const NOT_CONFIGURED = "TASK isn't set up yet. An administrator needs to set the TASK API address and key in the admin panel.";
+
   function onSignedOut(message) {
     state.clerk = null;
     show($('who'), false);
     for (const id of ['review-dialog', 'rcv-dialog']) if ($(id).open) $(id).close();
-    setMessage($('signin-notice'), message);
+    setMessage($('signin-notice'), message || (state.config && state.config.configured === false ? NOT_CONFIGURED : ''));
     setMessage($('signin-error'), '');
     $('password').value = '';
     showView('signin');
@@ -228,6 +230,15 @@
     }
     const { config } = state;
     $('company-name').textContent = config.companyName;
+    // Which TASK environment the app is connected to (set in the admin panel), e.g. "UAT".
+    if (config.environmentName) {
+      $('env-badge').textContent = config.environmentName;
+      $('env-badge').className = `env-badge${/^prod/i.test(config.environmentName) ? ' prod' : ''}`;
+      show($('env-badge'), true);
+    }
+    if (config.configured === false) {
+      setMessage($('signin-notice'), NOT_CONFIGURED);
+    }
     document.title = `Purchase Orders - ${config.companyName}`;
     fillSelect(
       $('login-type'),

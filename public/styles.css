@@ -112,6 +112,22 @@ h2 { font-size: 1.1rem; }
   flex: none;
 }
 .brand-title { font-weight: 700; white-space: nowrap; }
+.env-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  vertical-align: 2px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid currentColor;
+}
+.env-badge.prod { background: var(--ok-soft); color: var(--ok); }
+.field .hint { display: block; margin-top: 4px; font-weight: 400; }
+.history td { font-size: 0.9rem; vertical-align: top; }
+.history td:first-child { white-space: nowrap; }
 .who .btn-ghost { white-space: nowrap; }
 .brand-sub { color: var(--muted); font-size: 0.8rem; }
 .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -362,6 +378,12 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
   .products input.qty, .receive input.cost { width: 100%; text-align: left; }
   .receive td.remove { grid-column: 1 / -1; }
   .receive td.remove:empty { display: none; }
+
+  .history thead { display: none; }
+  .history, .history tbody, .history tr, .history td { display: block; }
+  .history tr { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .history td { border: 0; padding: 2px 0; }
+  .history td:first-child { color: var(--muted); font-size: 0.8rem; }
 
   .orders thead { display: none; }
   .orders, .orders tbody { display: block; }

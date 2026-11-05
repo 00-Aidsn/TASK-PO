@@ -222,6 +222,7 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD, data = sampleData() } = {}) {
   const state = {
     data,
+    apiKeys: new Set([apiKey]), // tests may add more valid keys
     tokens: new Map(),
     purchaseOrders: new Map(),
     purchaseOrderItems: new Map(),
@@ -280,8 +281,13 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
       key: req.get('Key'),
       authorization: req.get('Authorization'),
     });
-    if (req.get('Key') !== apiKey) return res.status(401).json({ Message: 'Invalid API key' });
+    if (!state.apiKeys.has(req.get('Key'))) return res.status(401).json({ Message: 'Invalid API key' });
     next();
+  });
+
+  // Checks the app's API key on its own (used by the admin panel's connection test).
+  app.get('/api/v3/auth/currentApp', (req, res) => {
+    res.json({ AuthNiceName: 'TASK PO app (mock)', IsAuthenticated: true });
   });
 
   const base = '/api/v3';

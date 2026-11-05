@@ -43,17 +43,41 @@ function extractMessage(data) {
   return '';
 }
 
-export function createTaskClient({ baseUrl, apiKey, timeoutMs = 20000, pageSize = 100, firstPageNo = 1, fetchImpl = fetch }) {
-  if (!apiKey) throw new Error('TASK API key is required');
+/**
+ * @param {object} options
+ * @param {() => { baseUrl: string, apiKey: string }} [options.getConnection]
+ *   Returns the TASK URL and API key to use. It is read on every request, so a change made in the
+ *   admin panel applies everywhere immediately. Alternatively pass fixed `baseUrl` and `apiKey`.
+ */
+export function createTaskClient({
+  baseUrl,
+  apiKey,
+  getConnection,
+  timeoutMs = 20000,
+  pageSize = 100,
+  firstPageNo = 1,
+  fetchImpl = fetch,
+}) {
+  if (!getConnection) {
+    if (!apiKey) throw new Error('TASK API key is required');
+    getConnection = () => ({ baseUrl, apiKey });
+  }
 
   async function request(method, path, { token, query, body } = {}) {
-    const url = new URL(`/api/v3${path}`, baseUrl);
+    const connection = getConnection() || {};
+    if (!connection.baseUrl || !connection.apiKey) {
+      throw new TaskApiError("TASK isn't set up yet. An administrator needs to set the TASK API URL and key.", {
+        status: 503,
+        kind: 'not_configured',
+      });
+    }
+    const url = new URL(`/api/v3${path}`, connection.baseUrl);
     for (const [k, v] of Object.entries(query || {})) {
       if (v === undefined || v === null || v === '') continue;
       if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, String(item)));
       else url.searchParams.set(k, String(v));
     }
-    const headers = { Key: apiKey, Accept: 'application/json' };
+    const headers = { Key: connection.apiKey, Accept: 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
     let payload;
     if (body !== undefined) {
@@ -116,6 +140,8 @@ export function createTaskClient({ baseUrl, apiKey, timeoutMs = 20000, pageSize 
     getAllPages,
 
     // --- Auth -------------------------------------------------------------
+    /** Checks the app's API key on its own (no clerk sign-in): GET /auth/currentApp. */
+    currentApp: () => request('GET', '/auth/currentApp'),
     loginClerk: ({ login, password, loginType }) =>
       request('POST', '/auth/clerk/login', { body: { Login: login, Password: password, LoginType: loginType } }),
     currentClerk: (token) => request('GET', '/auth/clerk/currentUser', { token }),
@@ -173,4 +199,23 @@ export function createTaskClient({ baseUrl, apiKey, timeoutMs = 20000, pageSize 
     getInvoiceItems: (token, id) => getAllPages(`/invoice/${encodeURIComponent(id)}/items`, { token }),
     addInvoiceItem: (token, id, item) => request('POST', `/invoice/${encodeURIComponent(id)}/items`, { token, body: item }),
   };
+}
+
+/**
+ * Tests a TASK URL and API key without changing anything: calls GET /auth/currentApp with that key.
+ * Returns { ok: true, appName } or { ok: false, message }.
+ */
+export async function checkTaskConnection({ baseUrl, apiKey, timeoutMs = 15000, fetchImpl = fetch }) {
+  const client = createTaskClient({ getConnection: () => ({ baseUrl, apiKey }), timeoutMs, fetchImpl });
+  try {
+    const app = await client.currentApp();
+    return { ok: true, appName: String(app?.AuthNiceName || '').trim() };
+  } catch (err) {
+    if (!(err instanceof TaskApiError)) throw err;
+    if (err.kind === 'unauthorized' || err.kind === 'forbidden') {
+      return { ok: false, message: 'TASK did not accept that API key for this server.' };
+    }
+    if (err.kind === 'network') return { ok: false, message: `Could not reach ${baseUrl}: ${err.message}.` };
+    return { ok: false, message: `TASK returned an error: ${err.message}` };
+  }
 }
