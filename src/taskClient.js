@@ -146,6 +146,14 @@ export function createTaskClient({
       request('POST', '/auth/clerk/login', { body: { Login: login, Password: password, LoginType: loginType } }),
     currentClerk: (token) => request('GET', '/auth/clerk/currentUser', { token }),
 
+    // --- Clerks (used by the central hub sync) ---------------------------
+    /** Every clerk, active and inactive (clerkStatusFilter 2 = All). */
+    getClerks: (token) => getAllPages('/clerks', { token, query: { clerkStatusFilter: 2 } }),
+    getClerk: (token, id) => request('GET', `/clerks/${encodeURIComponent(id)}`, { token }),
+    /** PUT /clerks replaces the whole clerk record, so send back everything that was read. */
+    updateClerk: (token, model) => request('PUT', '/clerks', { token, body: model }),
+    createClerk: (token, model) => request('POST', '/clerks', { token, body: model }),
+
     // --- Reference data ---------------------------------------------------
     getStockLocations: (token) => getAllPages('/stock/stocklocations', { token }),
 

@@ -19,11 +19,15 @@ import { createSettingsStore } from '../src/settings.js';
 import { createEntraAuth } from '../src/admin/entra.js';
 import { createMockTask, MOCK_API_KEY, MOCK_PASSWORD } from '../test/mockTask.js';
 import { createMockEntra, MOCK_CLIENT_ID, MOCK_CLIENT_SECRET, MOCK_ENTRA_USERS, MOCK_TENANT_ID } from '../test/mockEntra.js';
+import { createMockSupabase, MOCK_SUPABASE_KEY } from '../test/mockSupabase.js';
+import { createHubClient } from '../src/sync/hubClient.js';
+import { createClerkSync } from '../src/sync/clerkSync.js';
 
 const appPort = Number(process.env.PORT || 3000);
 const mockPort = Number(process.env.MOCK_TASK_PORT || 4010);
 const mock2Port = mockPort + 1;
 const entraPort = mockPort + 2;
+const hubPort = mockPort + 3;
 const SECOND_KEY = 'demo-second-api-key';
 
 const listen = (app, port) => new Promise((resolve) => http.createServer(app).listen(port, '127.0.0.1', resolve));
@@ -33,10 +37,11 @@ const taskB = createMockTask(); // a second "TASK server" to switch to in the ad
 taskA.state.apiKeys.add(SECOND_KEY);
 taskB.state.apiKeys.add(SECOND_KEY);
 const entra = createMockEntra();
+const hub = createMockSupabase(); // a fake "central hub" staff table
 entra.state.base = `http://localhost:${entraPort}`;
 entra.state.interactive = true; // show a page to pick which account signs in
 
-await Promise.all([listen(taskA.app, mockPort), listen(taskB.app, mock2Port), listen(entra.app, entraPort)]);
+await Promise.all([listen(taskA.app, mockPort), listen(taskB.app, mock2Port), listen(entra.app, entraPort), listen(hub.app, hubPort)]);
 
 const config = loadConfig({
   TASK_BASE_URL: `http://127.0.0.1:${mockPort}`,
@@ -56,6 +61,18 @@ const config = loadConfig({
   ADMIN_ALLOWED_USERS: MOCK_ENTRA_USERS.admin.preferred_username,
   SETTINGS_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
   DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'task-po-demo-')),
+  HUB_SUPABASE_URL: `http://127.0.0.1:${hubPort}`,
+  HUB_SUPABASE_KEY: MOCK_SUPABASE_KEY,
+  HUB_ALLOWED_HOSTS: '127.0.0.1',
+  HUB_TABLE: 'staff',
+  HUB_COL_MOBILE: 'mobile',
+  HUB_COL_PAYROLL_ID: 'payroll_id',
+  HUB_COL_VENUE_NO: 'venue_no',
+  SYNC_TASK_LOGIN: 'sync@example.com',
+  SYNC_TASK_PASSWORD: MOCK_PASSWORD,
+  SYNC_NEW_CLERK_GROUP_ID: '3',
+  SYNC_NEW_CLERK_VENUE_NO: '1',
+  SYNC_INTERVAL_MINUTES: '0', // demo: only when you press Sync now
 });
 config.admin.allowInsecureIdp = true; // the fake Entra runs on http://localhost
 
@@ -66,9 +83,12 @@ const settings = createSettingsStore({
   allowedHosts: config.task.allowedHosts,
   production: false,
 });
+const task = createTaskClient({ ...config.task, getConnection: settings.connection });
+const sync = createClerkSync({ config, task, settings, hub: createHubClient(config.sync.hub) });
 const app = createApp({
   config,
-  task: createTaskClient({ ...config.task, getConnection: settings.connection }),
+  task,
+  sync,
   mailer: createMailer(config.mail),
   store: createSessionStore({ idleMinutes: config.sessionIdleMinutes }),
   settings,
@@ -85,4 +105,5 @@ app.listen(appPort, () => {
   console.log('  viewer@example.com   - no PO or invoice permission (sign-in refused)');
   console.log(`Admin panel: http://localhost:${appPort}/admin and pick "${MOCK_ENTRA_USERS.admin.name}" on the fake Microsoft page.`);
   console.log(`  To try switching: address http://127.0.0.1:${mock2Port}, key ${SECOND_KEY}`);
+  console.log('  Central hub sync: use "Preview sync" in the admin panel (fake hub staff table, fake TASK clerks).');
 });

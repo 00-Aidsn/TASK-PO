@@ -5,6 +5,8 @@ import { createSessionStore } from './session.js';
 import { createApp } from './app.js';
 import { createSettingsStore } from './settings.js';
 import { createEntraAuth } from './admin/entra.js';
+import { createHubClient } from './sync/hubClient.js';
+import { createClerkSync } from './sync/clerkSync.js';
 
 let config;
 try {
@@ -36,11 +38,17 @@ const store = createSessionStore({ idleMinutes: config.sessionIdleMinutes });
 setInterval(() => store.sweep(), 60_000).unref();
 
 const entra = config.admin.enabled ? createEntraAuth(config.admin) : null;
-const app = createApp({ config, task, mailer, store, settings, entra });
+// Central hub (Supabase) -> TASK clerk sync: scheduled, plus "Sync now" in the admin panel.
+const sync = config.sync.enabled
+  ? createClerkSync({ config, task, settings, hub: createHubClient(config.sync.hub, { timeoutMs: config.task.timeoutMs }) })
+  : null;
+sync?.start();
+const app = createApp({ config, task, mailer, store, settings, entra, sync });
 app.listen(config.port, () => {
   console.log(`TASK purchase orders running on http://localhost:${config.port}`);
   const c = settings.current();
   console.log(`  TASK API: ${c.baseUrl || '(not set)'} [${c.environmentName || 'environment not named'}] from ${c.source === 'admin' ? 'admin panel' : '.env'}`);
   console.log(`  Admin:    ${config.admin.enabled ? `${config.admin.publicBaseUrl}/admin (Microsoft Entra sign-in)` : 'disabled (set ENTRA_* to enable)'}`);
+  console.log(`  Hub sync: ${sync ? `${config.sync.hub.table} at ${new URL(config.sync.hub.url).host}, ${config.sync.intervalMinutes ? `every ${config.sync.intervalMinutes} min` : 'manual only'}` : 'off (set HUB_SUPABASE_URL to enable)'}`);
   console.log(`  Email:    ${config.mail.mode === 'smtp' ? `SMTP via ${config.mail.smtp.host}` : `log only (written to ./${config.mail.outboxDir})`}`);
 });

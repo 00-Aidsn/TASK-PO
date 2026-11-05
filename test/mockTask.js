@@ -74,6 +74,21 @@ export function sampleData() {
         },
       },
       {
+        login: 'sync@example.com',
+        loginType: 0,
+        clerk: {
+          UserId: 290,
+          AuthNiceName: 'Sync Service',
+          Email: 'sync@example.com',
+          IsAuthenticated: true,
+          Locations: [11],
+          CanCreatePurchaseOrders: false,
+          CanApprovePurchaseOrders: false,
+          CanCreateInvoices: false,
+          CanCommitInvoices: false,
+        },
+      },
+      {
         login: 'buyer@example.com',
         loginType: 0,
         clerk: {
@@ -187,6 +202,38 @@ export function sampleData() {
       ],
       9003: [{ PurchaseItemID: 4, PurchaseOrderID: 9003, ProductSupplierID: 602, ProductID: 2002, Cases: 1, Units: 0 }],
     },
+    // TASK clerk records (ClerkModel). The HR fields are here so tests can prove the sync never changes them.
+    clerks: [
+      [201, 101, 'Sam', 'Manager', 'manager@madmex.example', true, false, '0400 000 001'],
+      [202, 102, 'Alex', 'Crew', '', true, false, ''],
+      [203, 103, 'Jordan', 'Lee', 'jordan.lee@madmex.example', true, false, ''],
+      [204, 104, 'Chris', 'Smith', '', true, false, ''],
+      [205, 105, 'Chris', 'Smith', '', true, false, ''],
+      [206, 106, 'Taylor', 'Old', 'taylor@old.example', true, false, ''],
+      [207, 107, 'Riley', 'Receiver', 'riley@madmex.example', false, false, ''],
+      [208, 108, 'Pat', 'Boss', 'pat.boss@madmex.example', true, true, ''],
+      [290, 190, 'Sync', 'Service', 'sync@example.com', true, true, ''],
+    ].map(([ClerkId, ClerkLogon, ClerkName, ClerkSurname, Email, IsActive, IsAdministrator, MobilePhone]) => ({
+      ClerkId,
+      ClerkLogon,
+      ClerkName,
+      ClerkSurname,
+      Email,
+      IsActive,
+      IsAdministrator,
+      MobilePhone,
+      ClerkGroupId: 2,
+      HomeVenueNo: 1,
+      PayrollIDNumber: '',
+      ClerkPassword: '',
+      DateOfBirth: '1990-01-01T00:00:00',
+      SocialSecurityNumber: `TFN-${ClerkId}`,
+      ClerkPayRate: 31.5,
+      HomeAddress: `${ClerkId} Example St`,
+      EmergencyContactName: 'Contact',
+      EmergencyContactPhone: '0499 999 999',
+      LabourRoleIDs: [1, 2],
+    })),
     // Existing purchase orders, so there is something to receive.
     purchaseOrders: [
       { PurchaseOrderID: 4001, SupplierID: 1, StockLocationNo: 11, OrderStatus: 1, ClerkID: 101, CustomerPO: 'Weekly produce', Created: '2026-11-03T22:00:00.000Z', DeliveryDate: '2026-11-06T00:00:00.000Z', Emailed: true },
@@ -230,6 +277,8 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
     nextItemId: 1,
     invoices: new Map(),
     invoiceItems: new Map(),
+    clerkWrites: [], // PUT/POST /clerks bodies, for assertions
+    nextClerkId: 301,
     nextInvoiceId: 7001,
     nextInvoiceItemId: 1,
     requests: [],
@@ -254,6 +303,7 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
     );
     state.invoices = new Map();
     state.invoiceItems = new Map();
+    state.clerkWrites = [];
     Object.assign(state, {
       failItemForProductId: null,
       failPurchaseOrderPut: false,
@@ -365,6 +415,37 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
   app.get(`${base}/purchaseOrder/templates/:id/items`, (req, res) =>
     paged(req, res, state.data.templateItems[Number(req.params.id)] || []),
   );
+
+  // --- clerks
+  app.get(`${base}/clerks`, (req, res) => {
+    const filter = Number(req.query.clerkStatusFilter ?? 0);
+    paged(req, res, state.data.clerks.filter((c) => filter === 2 || (filter === 0 ? c.IsActive : !c.IsActive)));
+  });
+  app.get(`${base}/clerks/:id`, (req, res) => {
+    const clerk = state.data.clerks.find((c) => c.ClerkId === Number(req.params.id));
+    if (!clerk) return res.status(404).json({ Message: 'Clerk not found' });
+    res.json(clerk);
+  });
+  app.put(`${base}/clerks`, (req, res) => {
+    const body = req.body || {};
+    state.clerkWrites.push({ method: 'PUT', body });
+    const i = state.data.clerks.findIndex((c) => c.ClerkId === Number(body.ClerkId));
+    if (i < 0) return res.status(404).json({ Message: 'Clerk not found' });
+    // Like TASK: a missing password leaves the password as it was.
+    const kept = state.data.clerks[i].ClerkPassword;
+    state.data.clerks[i] = { ...body, ClerkPassword: body.ClerkPassword ?? kept };
+    res.json(true);
+  });
+  app.post(`${base}/clerks`, (req, res) => {
+    const body = req.body || {};
+    state.clerkWrites.push({ method: 'POST', body });
+    if (state.data.clerks.some((c) => c.ClerkLogon === body.ClerkLogon)) {
+      return res.status(406).json({ Message: `Clerk logon ${body.ClerkLogon} is already used` });
+    }
+    const clerk = { ...body, ClerkId: state.nextClerkId++ };
+    state.data.clerks.push(clerk);
+    res.json(clerk);
+  });
 
   app.get(`${base}/purchaseOrder`, (req, res) => {
     const f = (k) => (req.query[k] === undefined ? null : Number(req.query[k]));

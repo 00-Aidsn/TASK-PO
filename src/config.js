@@ -76,6 +76,37 @@ export function loadConfig(env = process.env) {
       sessionMaxHours: int(env.ADMIN_SESSION_MAX_HOURS, 8, 'ADMIN_SESSION_MAX_HOURS'),
       allowInsecureIdp: false, // tests only
     },
+    // Central hub (Supabase) -> TASK clerk sync. Enabled when HUB_SUPABASE_URL is set.
+    sync: {
+      enabled: Boolean(env.HUB_SUPABASE_URL),
+      hub: {
+        url: (env.HUB_SUPABASE_URL || '').replace(/\/+$/, ''),
+        key: env.HUB_SUPABASE_KEY || '',
+        schema: env.HUB_SCHEMA || 'public',
+        table: env.HUB_TABLE || '',
+        allowedHosts: list(env.HUB_ALLOWED_HOSTS || '*.supabase.co'),
+        columns: {
+          id: env.HUB_COL_ID || 'id',
+          firstName: env.HUB_COL_FIRST_NAME || 'first_name',
+          lastName: env.HUB_COL_LAST_NAME || 'last_name',
+          email: env.HUB_COL_EMAIL || 'email',
+          active: env.HUB_COL_ACTIVE ?? 'is_active', // blank = everyone in the hub is active
+          mobile: env.HUB_COL_MOBILE || '',
+          payrollId: env.HUB_COL_PAYROLL_ID || '',
+          venueNo: env.HUB_COL_VENUE_NO || '',
+          clerkLogon: env.HUB_COL_CLERK_LOGON || '',
+        },
+      },
+      // The TASK clerk the sync signs in as. It needs permission to view and edit clerks.
+      taskLogin: env.SYNC_TASK_LOGIN || '',
+      taskPassword: env.SYNC_TASK_PASSWORD || '',
+      taskLoginType: int(env.SYNC_TASK_LOGIN_TYPE, 0, 'SYNC_TASK_LOGIN_TYPE'),
+      newClerkGroupId: int(env.SYNC_NEW_CLERK_GROUP_ID, 0, 'SYNC_NEW_CLERK_GROUP_ID'),
+      newClerkVenueNo: int(env.SYNC_NEW_CLERK_VENUE_NO, 0, 'SYNC_NEW_CLERK_VENUE_NO'),
+      intervalMinutes: int(env.SYNC_INTERVAL_MINUTES, 15, 'SYNC_INTERVAL_MINUTES'),
+      maxDeactivations: int(env.SYNC_MAX_DEACTIVATIONS, 10, 'SYNC_MAX_DEACTIVATIONS'),
+      maxCreations: int(env.SYNC_MAX_CREATIONS, 25, 'SYNC_MAX_CREATIONS'),
+    },
     settings: {
       dataDir: path.resolve(env.DATA_DIR || 'data'),
       encryptionKey: parseEncryptionKey(env.SETTINGS_ENCRYPTION_KEY),
@@ -121,6 +152,43 @@ export function loadConfig(env = process.env) {
       problems.push('SETTINGS_ENCRYPTION_KEY must be 32 random bytes (base64), e.g. from: openssl rand -base64 32');
     }
     if (admin.sessionIdleMinutes < 1 || admin.sessionMaxHours < 1) problems.push('Admin session times must be at least 1');
+  }
+  const { sync } = config;
+  if (sync.enabled) {
+    const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    if (!admin.enabled) problems.push('The hub sync needs the admin panel (ENTRA_* settings) for previews and approvals');
+    let hubUrl = null;
+    try {
+      hubUrl = new URL(sync.hub.url);
+    } catch {
+      problems.push('HUB_SUPABASE_URL must be your Supabase project URL, e.g. https://abcd1234.supabase.co');
+    }
+    if (hubUrl) {
+      const local = ['localhost', '127.0.0.1'].includes(hubUrl.hostname);
+      if (hubUrl.protocol !== 'https:' && !(local && !production)) problems.push('HUB_SUPABASE_URL must use https');
+      const allowed = sync.hub.allowedHosts.some((p) =>
+        p.startsWith('*.') ? hubUrl.hostname.endsWith(p.slice(1)) : hubUrl.hostname === p,
+      );
+      if (!allowed) problems.push(`HUB_SUPABASE_URL host must be one of HUB_ALLOWED_HOSTS (${sync.hub.allowedHosts.join(', ')})`);
+    }
+    if (!sync.hub.key) problems.push('HUB_SUPABASE_KEY is required for the hub sync');
+    if (!identifier.test(sync.hub.table)) problems.push('HUB_TABLE must be the hub table or view name');
+    if (!identifier.test(sync.hub.schema)) problems.push('HUB_SCHEMA must be a schema name');
+    for (const [name, col] of Object.entries(sync.hub.columns)) {
+      if (col && !identifier.test(col)) problems.push(`HUB_COL_* for ${name} must be a column name (got "${col}")`);
+    }
+    for (const required of ['id', 'firstName', 'lastName', 'email']) {
+      if (!sync.hub.columns[required]) problems.push(`The hub column for ${required} must be set`);
+    }
+    if (!sync.taskLogin || !sync.taskPassword) {
+      problems.push('SYNC_TASK_LOGIN and SYNC_TASK_PASSWORD (a TASK clerk allowed to edit clerks) are required for the hub sync');
+    }
+    if (!sync.newClerkGroupId) problems.push('SYNC_NEW_CLERK_GROUP_ID (TASK clerk group for new clerks) is required for the hub sync');
+    if (!sync.newClerkVenueNo && !sync.hub.columns.venueNo) {
+      problems.push('Set SYNC_NEW_CLERK_VENUE_NO or HUB_COL_VENUE_NO so new clerks get a home venue');
+    }
+    if (sync.intervalMinutes < 0) problems.push('SYNC_INTERVAL_MINUTES must be 0 (off) or more');
+    if (sync.maxDeactivations < 0 || sync.maxCreations < 0) problems.push('SYNC_MAX_* limits must be 0 or more');
   }
   if (!LOGIN_TYPES.some((t) => t.value === config.task.defaultLoginType)) {
     problems.push('TASK_LOGIN_TYPE must be 0, 1, 2 or 3');

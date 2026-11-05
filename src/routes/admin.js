@@ -34,7 +34,7 @@ function cookie(name, value, { secure, sameSite, path: cookiePath = '/', maxAge 
   return parts.join('; ');
 }
 
-export function adminRoutes({ config, settings, entra, clerkStore }) {
+export function adminRoutes({ config, settings, entra, clerkStore, sync = null }) {
   const router = Router();
   const { admin } = config;
   const secure = config.cookieSecure;
@@ -190,6 +190,41 @@ export function adminRoutes({ config, settings, entra, clerkStore }) {
 
   router.get('/api/admin/audit', requireAdmin, (req, res) => {
     res.json({ entries: settings.readAudit(50) });
+  });
+
+  // ---------------------------------------------------------------- central hub -> TASK clerk sync
+  router.get('/api/admin/sync', requireAdmin, (req, res) => {
+    res.json(sync ? sync.status() : { configured: false });
+  });
+
+  router.use('/api/admin/sync', requireAdmin, (req, res, next) => {
+    if (!sync) return res.status(404).json({ error: 'The central hub sync is not set up (HUB_SUPABASE_URL).' });
+    next();
+  });
+
+  router.post('/api/admin/sync/check', async (req, res) => {
+    res.json({ check: await sync.check() });
+  });
+
+  // What a sync would do right now. Changes nothing.
+  router.post('/api/admin/sync/preview', async (req, res) => {
+    res.json({ plan: await sync.preview() });
+  });
+
+  // Runs the sync now. Name matches are only applied for the exact pairs approved here.
+  router.post('/api/admin/sync/run', async (req, res) => {
+    const body = req.body || {};
+    const approved = Array.isArray(body.approvedNameLinks) ? body.approvedNameLinks : [];
+    if (approved.length > 5000 || approved.some((a) => typeof a?.hubId !== 'string' || !Number.isInteger(Number(a?.clerkId)))) {
+      return res.status(400).json({ error: 'Approved name matches are not valid.' });
+    }
+    const report = await sync.run({
+      mode: 'manual',
+      approvedNameLinks: approved.map((a) => ({ hubId: a.hubId.slice(0, 200), clerkId: Number(a.clerkId) })),
+      confirmLargeChanges: body.confirmLargeChanges === true,
+      actor: req.admin,
+    });
+    res.json({ report });
   });
 
   return router;

@@ -76,6 +76,32 @@
         </form>
       </div>
 
+      <div class="card" id="sync-card" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Central hub → TASK clerks</h2>
+          <div class="filters">
+            <button type="button" class="btn" id="sync-check">Check hub connection</button>
+            <button type="button" class="btn btn-primary" id="sync-preview">Preview sync</button>
+          </div>
+        </div>
+        <p class="muted small">
+          The central hub (Supabase) is the master list of staff. The sync creates, updates, deactivates and reactivates TASK clerks to match it.
+          It only changes names, email, mobile, payroll ID and active status. Passwords and HR details in TASK are never touched.
+        </p>
+        <p class="muted small" id="sync-status"></p>
+        <div class="notice" id="sync-message" role="status" hidden></div>
+        <div id="sync-plan" hidden>
+          <dl class="summary" id="sync-summary"></dl>
+          <div id="sync-sections"></div>
+          <label class="check close-short" id="sync-confirm-row" hidden>
+            <input type="checkbox" id="sync-confirm-large"> <span id="sync-confirm-text"></span>
+          </label>
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="sync-run">Apply sync</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <h2 class="card-title">Change history</h2>

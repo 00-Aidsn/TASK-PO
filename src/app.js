@@ -12,6 +12,8 @@ import { receivingRoutes } from './routes/receiving.js';
 import { ReceiptError } from './receiving.js';
 import { adminRoutes } from './routes/admin.js';
 import { createSettingsStore } from './settings.js';
+import { SyncError } from './sync/clerkSync.js';
+import { HubError } from './sync/hubClient.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -31,6 +33,7 @@ export function createApp({
     production: config.production,
   }),
   entra = null,
+  sync = null,
 }) {
   // A new TASK URL or key signs every clerk out: their sessions belong to the old connection.
   settings.onChange(() => store.clear());
@@ -69,7 +72,7 @@ export function createApp({
 
   if (config.admin.enabled) {
     if (!entra) throw new Error('The admin panel is enabled but Entra sign-in was not set up');
-    app.use(adminRoutes({ config, settings, entra, clerkStore: store }));
+    app.use(adminRoutes({ config, settings, entra, clerkStore: store, sync }));
   }
   app.use('/api', authRoutes({ task, config, settings }));
   app.use('/api', lookupRoutes({ task, config }));
@@ -87,6 +90,8 @@ export function createApp({
     if (err instanceof CatalogueChangedError) {
       return res.status(409).json({ code: 'catalogue_changed', error: err.message, changes: err.changes });
     }
+    if (err instanceof SyncError) return res.status(err.status).json({ code: err.code, error: err.message });
+    if (err instanceof HubError) return res.status(502).json({ code: 'hub_error', error: err.message });
     if (err instanceof ReceiptError) {
       return res
         .status(err.status)

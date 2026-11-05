@@ -107,6 +107,9 @@ import crypto from 'node:crypto';
 import { createSettingsStore } from '../src/settings.js';
 import { createEntraAuth } from '../src/admin/entra.js';
 import { createMockEntra, MOCK_CLIENT_ID, MOCK_CLIENT_SECRET, MOCK_ENTRA_USERS, MOCK_TENANT_ID } from './mockEntra.js';
+import { createMockSupabase, MOCK_SUPABASE_KEY } from './mockSupabase.js';
+import { createHubClient } from '../src/sync/hubClient.js';
+import { createClerkSync } from '../src/sync/clerkSync.js';
 
 export { MOCK_ENTRA_USERS };
 
@@ -158,15 +161,33 @@ export function jarClient(base) {
  * App with the admin panel enabled: a fake Entra, two fake TASK servers (A is the starting URL),
  * and a temporary DATA_DIR. Returns helpers to sign in as an admin or a clerk.
  */
-export async function startAdminStack({ env = {}, dataDir } = {}) {
+export async function startAdminStack({ env = {}, dataDir, withSync = false } = {}) {
   const taskA = createMockTask();
   const taskB = createMockTask();
   const entra = createMockEntra();
-  const [taskAServer, taskBServer, entraServer] = await Promise.all([
+  const hub = createMockSupabase();
+  const [taskAServer, taskBServer, entraServer, hubServer] = await Promise.all([
     listenServer(http.createServer(taskA.app)),
     listenServer(http.createServer(taskB.app)),
     listenServer(http.createServer(entra.app)),
+    listenServer(http.createServer(hub.app)),
   ]);
+  const syncEnv = withSync
+    ? {
+        HUB_SUPABASE_URL: `http://127.0.0.1:${hubServer.address().port}`,
+        HUB_SUPABASE_KEY: MOCK_SUPABASE_KEY,
+        HUB_ALLOWED_HOSTS: '127.0.0.1',
+        HUB_TABLE: 'staff',
+        HUB_COL_MOBILE: 'mobile',
+        HUB_COL_PAYROLL_ID: 'payroll_id',
+        HUB_COL_VENUE_NO: 'venue_no',
+        SYNC_TASK_LOGIN: 'sync@example.com',
+        SYNC_TASK_PASSWORD: MOCK_PASSWORD,
+        SYNC_NEW_CLERK_GROUP_ID: '3',
+        SYNC_NEW_CLERK_VENUE_NO: '1',
+        SYNC_INTERVAL_MINUTES: '0',
+      }
+    : {};
   entra.state.base = `http://127.0.0.1:${entraServer.address().port}`;
   const appServer = await listenServer(http.createServer());
   const base = `http://127.0.0.1:${appServer.address().port}`;
@@ -186,13 +207,14 @@ export async function startAdminStack({ env = {}, dataDir } = {}) {
     ADMIN_ALLOWED_USERS: MOCK_ENTRA_USERS.admin.preferred_username,
     SETTINGS_ENCRYPTION_KEY: encryptionKey,
     DATA_DIR: dataDir,
+    ...syncEnv,
     ...env,
   });
   config.admin.allowInsecureIdp = true; // the fake Entra runs on http://127.0.0.1
 
   async function close() {
     await Promise.all(
-      [appServer, taskAServer, taskBServer, entraServer].map(
+      [appServer, taskAServer, taskBServer, entraServer, hubServer].map(
         (srv) =>
           new Promise((r) => {
             srv.closeAllConnections?.();
@@ -217,7 +239,8 @@ export async function startAdminStack({ env = {}, dataDir } = {}) {
   }
   const task = createTaskClient({ ...config.task, getConnection: settings.connection });
   const store = createSessionStore({ idleMinutes: config.sessionIdleMinutes });
-  const app = createApp({ config, task, mailer: fakeMailer(), store, settings, entra: createEntraAuth(config.admin) });
+  const sync = config.sync.enabled ? createClerkSync({ config, task, settings, hub: createHubClient(config.sync.hub) }) : null;
+  const app = createApp({ config, task, mailer: fakeMailer(), store, settings, entra: createEntraAuth(config.admin), sync });
   appServer.on('request', app);
 
   /** Runs the whole Microsoft sign-in as `user` ('admin', 'other', 'outsider'). Returns the final callback response. */
@@ -249,6 +272,8 @@ export async function startAdminStack({ env = {}, dataDir } = {}) {
     taskAUrl: `http://127.0.0.1:${taskAServer.address().port}`,
     taskBUrl: `http://127.0.0.1:${taskBServer.address().port}`,
     entra: entra.state,
+    hub: hub.state,
+    sync,
     client: () => jarClient(base),
     adminSignIn,
     clerkSignIn,

@@ -108,7 +108,7 @@ This runs the app against an in-memory fake TASK API with demo data. Emails are 
 
 Demo mode includes some open POs to receive. Completing a demo invoice adds its stock to on hand, so you can watch the order screen's stock figures change.
 
-Demo mode also runs the **admin panel** at `/admin` with a fake Microsoft sign-in page. Pick "Alex Admin" to get in, or "Sam Staff" to see a refusal. The console prints a second fake TASK address and key you can switch to.
+Demo mode also runs the **admin panel** at `/admin` with a fake Microsoft sign-in page. Pick "Alex Admin" to get in, or "Sam Staff" to see a refusal. The console prints a second fake TASK address and key you can switch to. The admin panel's **Central hub → TASK clerks** card works against a fake hub staff table, so you can try **Preview sync** and **Apply sync**.
 
 ## Stock on hand and suggested quantities
 
@@ -188,6 +188,33 @@ Safeguards:
 
 No API permissions are needed beyond the default sign-in (`openid profile email`).
 
+## Central hub (Supabase) → TASK clerk sync
+
+The central hub (Supabase) is the **master list of staff**. The sync keeps TASK clerks matching it. It runs automatically every `SYNC_INTERVAL_MINUTES` (default 15), and from **Sync now** in the admin panel. Clerk sign-in to the PO app is unchanged.
+
+**Matching a hub user to a TASK clerk**, in this order:
+1. **A saved link** from an earlier sync. Links are kept for each TASK server, because UAT and production have different clerk IDs.
+2. **Email address.** This is the primary key once emails are in TASK.
+3. **First and last name.** This is for the first sync, to bring emails into TASK. A name is only matched when exactly one TASK clerk has it; capitals, accents and punctuation are ignored. A name match is **only applied when you tick it** in the Sync now preview, and only for those exact pairs. The automatic sync never applies name matches.
+
+**What it changes:**
+- **Matched clerks:** first name, surname, email, mobile, payroll ID and active status only. An empty hub value never blanks a TASK field.
+- **Deactivation:** only when the hub explicitly marks the person inactive. People missing from the hub are reported, not deactivated. TASK administrators and the sync's own account are never deactivated automatically.
+- **New hub users:** created in TASK with `SYNC_NEW_CLERK_GROUP_ID`, the hub venue or `SYNC_NEW_CLERK_VENUE_NO`, the next free logon number (or the hub's), and **no password**. A manager sets the password in TASK.
+- **Never changed in TASK:** password, date of birth, tax/social security number, pay rate, addresses, emergency contacts, groups and labour roles. TASK's update call replaces the whole clerk, so each clerk is re-read just before saving, only the synced fields are replaced, and the password field is never sent. Nothing is ever deleted.
+- **The hub:** only read, never written to. Only the mapped columns are requested.
+
+**Safeguards:**
+- **Preview first:** Sync now shows a full preview (to create, update, deactivate, reactivate, name matches to tick, things needing attention, and TASK clerks not in the hub) before anything changes.
+- **Large runs held:** the automatic sync holds back more than `SYNC_MAX_DEACTIVATIONS` deactivations or `SYNC_MAX_CREATIONS` new clerks in one run. You can apply them from Sync now after checking.
+- **Empty hub:** if the hub returns no users, nothing is changed.
+- **History:** every run is recorded with who ran it, which clerks and which fields changed. Values and HR details are not recorded.
+
+### Setting up the hub side
+- **A view with only the needed columns.** In Supabase, create a view of your staff table containing only id, first name, last name, email, active, and optionally mobile, payroll ID, venue number and clerk logon. Point `HUB_TABLE` at that view, so the app can't read anything else.
+- **The key.** `HUB_SUPABASE_KEY` must be able to read that view. The `service_role` key works, but it can read and write everything in the project. If you use it, keep it in your secret store and treat it like a database password. A key limited to that view, through a dedicated database role, is safer; ask whoever manages the hub.
+- **A sync clerk in TASK.** Create a TASK clerk for the sync (`SYNC_TASK_LOGIN` / `SYNC_TASK_PASSWORD`) with permission to view and edit clerks.
+
 ## Configuration (`.env`)
 
 | Variable | Default | Purpose |
@@ -212,6 +239,12 @@ No API permissions are needed beyond the default sign-in (`openid profile email`
 | `DATA_DIR` | `data` | Saved settings and admin change history (persistent storage) |
 | `TASK_ALLOWED_HOSTS` | `*.xchangefusion.com` | Servers the TASK address may point at (not editable in the panel) |
 | `TASK_ENVIRONMENT_NAME` | from the URL | Environment name shown to clerks (editable in the panel) |
+| `HUB_SUPABASE_URL` / `HUB_SUPABASE_KEY` | (blank) | Turn on the central hub sync. See [Central hub sync](#central-hub-supabase--task-clerk-sync) |
+| `HUB_TABLE`, `HUB_SCHEMA`, `HUB_COL_*` | `public`, `id`, `first_name`, `last_name`, `email`, `is_active` | Hub table/view and column names |
+| `SYNC_TASK_LOGIN_TYPE` / `SYNC_TASK_LOGIN` / `SYNC_TASK_PASSWORD` | (blank) | TASK clerk the sync signs in as |
+| `SYNC_NEW_CLERK_GROUP_ID` / `SYNC_NEW_CLERK_VENUE_NO` | (blank) | Clerk group and home venue for new clerks |
+| `SYNC_INTERVAL_MINUTES` | `15` | Automatic sync interval (0 = Sync now only) |
+| `SYNC_MAX_DEACTIVATIONS` / `SYNC_MAX_CREATIONS` | `10` / `25` | Larger automatic runs are held for you to apply |
 | `REQUIRE_VENUE_COST` | `true` | Only offer products that have a supplier cost for the location's venue |
 | `PRODUCT_LOOKUP_CONCURRENCY` | `6` | Parallel `GET /products/{id}` calls when checking product status (1-20) |
 | `MAIL_MODE` | `log` | `log` writes emails to `MAIL_OUTBOX_DIR`; `smtp` sends them |
@@ -228,6 +261,8 @@ All calls go to `{TASK_BASE_URL}/api/v3`. Every call sends the `Key` header. Aft
 |---|---|
 | Clerk sign-in | `POST /auth/clerk/login` with `{ Login, Password, LoginType }` |
 | Admin connection test (API key only) | `GET /auth/currentApp` |
+| Clerk sync | `GET /clerks?clerkStatusFilter=2`, `GET /clerks/{id}`, `PUT /clerks`, `POST /clerks` |
+| Central hub (Supabase REST) | `GET {HUB_SUPABASE_URL}/rest/v1/{HUB_TABLE}?select=<mapped columns>` |
 | Clerk profile and permissions | `GET /auth/clerk/currentUser` |
 | Locations (and their venue) | `GET /stock/stocklocations` |
 | Suppliers (live, active only) | `GET /supplier`, `GET /supplier/{id}` |
@@ -270,7 +305,13 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - Only you can sign in. Ask a colleague to try `/admin`: they should be refused, and the refusal should appear in the change history.
    - **Test current connection** succeeds with the UAT key, and a wrong key is refused.
    - Switching from UAT to production signs clerks out, and their next sign-in goes to production. Switch back afterwards.
-10. Confirm receiving with a test PO, in this order:
+10. Confirm the hub sync in UAT **before pointing it at production**. Use **Sync now** and read the preview each time:
+   - **Passwords survive:** saving a clerk without `ClerkPassword` leaves their password unchanged. Check by signing in as an updated test clerk afterwards. **Do this first.**
+   - **Other fields survive:** HR fields (date of birth, tax number, pay rate, address), groups and labour roles are unchanged after an update.
+   - **New clerks work:** creating a clerk works with no password and the next logon number. If TASK needs a password or assigns logons itself, tell the developer.
+   - **Deactivation behaves:** a deactivated clerk can't sign in to the POS, and reactivating restores access.
+   - **The first sync:** check the name matches carefully before ticking them, and fix anything under "Needs attention".
+11. Confirm receiving with a test PO, in this order:
    - **Booking stock in:** completing an invoice (`PUT /invoice/{id}` with `IsComplete: true`) adds the stock. Stock on hand should rise by the units received.
    - **No double counting:** TASK does **not** also update the PO's received quantities when an invoice linked to it (`PurchaseOrderNo`) is completed. The app updates the PO itself; if TASK does it too, the PO would be counted twice and the app's PO update should be removed.
    - **Invoice item fields:** `Cost` is the case cost ex GST, `UnitCost` the unit cost ex GST, and `CaseCount`/`UnitCount` the received quantities. Check the invoice total in TASK.
@@ -292,6 +333,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - send-time re-checks for price, product status, supplier status and supplier email
 - stock levels, suggested cases, the 50-product chunking, and a stock failure not blocking orders
 - admin panel: Entra sign-in (PKCE, state, nonce, replayed or forged callbacks, other users and other tenants refused, object-ID allow-list); key masking; connection tests; approved hosts only; saves that TASK rejects aren't stored; a change switching every TASK call to the new server and key and signing clerks out; encryption at rest and restart; change history without key material; changes from other websites blocked
+- hub sync: preview changes nothing; matching by link, email, then name (approval-only, exact pairs); scheduled runs never apply name matches; only synced fields change and HR data and passwords are untouched; creation defaults; deactivation and reactivation; protected admins and the sync account; size limits held; an empty or unreachable hub changes nothing; TASK session renewal; links kept per TASK server; history without personal values
 - receiving: permissions; the open PO list; full, short and closed-short deliveries; invoices completed or left for a manager; cost changes; items not on the PO; deliveries with no PO; duplicate invoice numbers; rollback and partial failures; validation; double submits
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard
@@ -309,10 +351,11 @@ src/
   receiving.js     receipt validation, invoice + PO updates with rollback
   settings.js      live TASK URL/key/environment, encrypted at rest, change history
   admin/entra.js   Microsoft Entra ID sign-in (OpenID Connect) and the admin allow-list
+  sync/            central hub (Supabase) reader and the hub -> TASK clerk sync
   emailTemplate.js supplier email (HTML + text)
   mailer.js        SMTP or log-to-outbox
   routes/          /api/login, /api/logout, /api/me, lookups, orders, receiving, admin
 public/            browser UI (plain HTML/CSS/JS, no build step); admin.html + admin.js for /admin
-test/              tests, the fake TASK API and a fake Microsoft Entra
+test/              tests and fakes of the TASK API, Microsoft Entra and the Supabase hub
 scripts/dev-mock.js demo mode
 ```
