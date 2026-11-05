@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Purchase Orders</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">PO</span>
+      <div>
+        <div class="brand-title">Purchase Orders</div>
+        <div class="brand-sub" id="company-name"></div>
+      </div>
+    </div>
+    <div class="who" id="who" hidden>
+      <span class="who-name" id="who-name"></span>
+      <button type="button" class="btn btn-ghost" id="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Sign in -->
+    <section id="signin-view" class="view" hidden>
+      <form id="signin-form" class="card signin-card" novalidate>
+        <h1>Sign in with TASK</h1>
+        <p class="muted">Use your own TASK clerk login. Every purchase order you send is recorded against your clerk account.</p>
+        <div class="notice" id="signin-notice" role="status" hidden></div>
+        <label class="field">
+          <span>Login type</span>
+          <select id="login-type" name="loginType"></select>
+        </label>
+        <label class="field">
+          <span>Login</span>
+          <input id="login" name="login" autocomplete="username" required maxlength="200">
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="200">
+        </label>
+        <div class="error" id="signin-error" role="alert" hidden></div>
+        <button type="submit" class="btn btn-primary btn-block" id="signin-submit">Sign in</button>
+        <p class="hint" id="session-hint"></p>
+      </form>
+    </section>
+
+    <!-- Builder -->
+    <section id="builder-view" class="view" hidden>
+      <div class="card">
+        <h2 class="card-title">Order from</h2>
+        <div class="grid-2">
+          <label class="field">
+            <span>Deliver to location</span>
+            <select id="location"><option value="">Loading…</option></select>
+          </label>
+          <label class="field">
+            <span>Supplier</span>
+            <select id="supplier"><option value="">Loading…</option></select>
+          </label>
+        </div>
+        <p class="supplier-email" id="supplier-email" hidden></p>
+        <div class="template-row" id="template-row" hidden>
+          <label class="field grow">
+            <span>Start from a TASK template (optional)</span>
+            <select id="template"></select>
+          </label>
+          <button type="button" class="btn" id="load-template">Load template</button>
+        </div>
+        <div class="error" id="builder-error" role="alert" hidden></div>
+      </div>
+
+      <div class="card" id="products-card" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Products</h2>
+          <div class="filters">
+            <input type="search" id="product-search" placeholder="Search product or code" aria-label="Search products">
+            <label class="check"><input type="checkbox" id="only-ordered"> On this order only</label>
+          </div>
+        </div>
+        <p class="muted small" id="products-status"></p>
+        <div class="table-wrap">
+          <table class="products" id="products-table">
+            <thead>
+              <tr>
+                <th scope="col">Code</th>
+                <th scope="col">Product</th>
+                <th scope="col">Pack</th>
+                <th scope="col" class="num">Case cost</th>
+                <th scope="col" class="num">Cases</th>
+                <th scope="col" class="num">Units</th>
+                <th scope="col" class="num">Line ex GST</th>
+              </tr>
+            </thead>
+            <tbody id="products-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="details-card" hidden>
+        <h2 class="card-title">Delivery details</h2>
+        <div class="grid-2">
+          <label class="field">
+            <span>Requested delivery date</span>
+            <input type="date" id="delivery-date">
+          </label>
+          <label class="field">
+            <span>Our reference (optional)</span>
+            <input id="customer-po" maxlength="50" placeholder="e.g. Weekly dry goods">
+          </label>
+        </div>
+        <label class="field">
+          <span>Delivery address / instructions (optional)</span>
+          <input id="ship-to" maxlength="300" placeholder="e.g. Rear loading dock, before 10am">
+        </label>
+        <label class="field">
+          <span>Comments to supplier (optional)</span>
+          <textarea id="comments" rows="3" maxlength="1000"></textarea>
+        </label>
+      </div>
+      <div class="spacer"></div>
+    </section>
+
+    <!-- Result -->
+    <section id="result-view" class="view" hidden>
+      <div class="card result-card" id="result-card">
+        <h1 id="result-title"></h1>
+        <dl class="summary" id="result-summary"></dl>
+        <div class="notice" id="result-email" role="status"></div>
+        <div class="actions">
+          <button type="button" class="btn" id="retry-email" hidden>Retry email</button>
+          <button type="button" class="btn btn-primary" id="new-order">Start a new order</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="order-bar" id="order-bar" hidden>
+    <div class="order-total">
+      <span id="order-lines">0 lines</span>
+      <strong id="order-total">$0.00</strong><span class="muted small"> ex GST</span>
+    </div>
+    <button type="button" class="btn btn-primary" id="review" disabled>Review &amp; send</button>
+  </footer>
+
+  <dialog id="review-dialog" aria-labelledby="review-title">
+    <form method="dialog" class="dialog-body">
+      <h2 id="review-title">Review purchase order</h2>
+      <dl class="summary" id="review-summary"></dl>
+      <div class="table-wrap">
+        <table class="review-lines">
+          <thead><tr><th>Product</th><th class="num">Cases</th><th class="num">Units</th><th class="num">Ex GST</th></tr></thead>
+          <tbody id="review-lines"></tbody>
+        </table>
+      </div>
+      <div class="notice" id="review-note"></div>
+      <div class="error" id="review-error" role="alert" hidden></div>
+      <div class="actions">
+        <button type="submit" class="btn" value="cancel" id="review-cancel">Back to order</button>
+        <button type="button" class="btn btn-primary" id="send">Send purchase order</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

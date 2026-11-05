@@ -1,0 +1,22 @@
+{
+  "name": "task-po",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Purchase order sending interface for the Mad Mex TASK API (XchangeFusion).",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev:mock": "node scripts/dev-mock.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "dotenv": "16.6.1",
+    "express": "5.1.0",
+    "helmet": "8.1.0",
+    "nodemailer": "7.0.13"
+  }
+}

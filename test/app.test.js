@@ -1,0 +1,362 @@
+import { after, before, beforeEach, describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { MOCK_API_KEY, MOCK_PASSWORD, startStack, tomorrow } from './helpers.js';
+
+let stack;
+before(async () => {
+  stack = await startStack();
+});
+after(async () => {
+  // The API key and clerk tokens must never reach the browser.
+  const all = stack.responses.join('\n');
+  assert.ok(!all.includes(MOCK_API_KEY), 'API key leaked in a response');
+  for (const token of stack.mock.tokens.keys()) assert.ok(!all.includes(token), 'TASK token leaked in a response');
+  await stack.close();
+});
+beforeEach(() => {
+  stack.mock.failItemForProductId = null;
+  stack.mock.failPurchaseOrderPut = false;
+  stack.mock.failDelete = false;
+  stack.mock.expireTokens = false;
+  stack.mailer.fail = false;
+  stack.mailer.sent.length = 0;
+});
+
+const order = (overrides = {}) => ({
+  supplierId: 1,
+  locationNo: 11,
+  deliveryDate: tomorrow(),
+  customerPo: 'Weekly produce',
+  comments: 'Please deliver before 10am',
+  lines: [
+    { productSupplierId: 501, cases: 2, units: 3 },
+    { productSupplierId: 502, cases: 1, units: 0 },
+  ],
+  ...overrides,
+});
+
+describe('sign-in', () => {
+  test('public config is available without signing in', async () => {
+    const res = await stack.client().req('GET', '/api/config');
+    assert.equal(res.status, 200);
+    assert.equal(res.data.loginTypes.length, 4);
+    assert.equal(res.data.mailMode, 'log');
+  });
+
+  test('wrong password is refused and no session is created', async () => {
+    const c = stack.client();
+    const res = await c.req('POST', '/api/login', { login: 'manager@example.com', password: 'nope', loginType: 0 });
+    assert.equal(res.status, 401);
+    assert.match(res.data.error, /Sign-in failed/);
+    assert.equal(c.cookie, '');
+  });
+
+  test('missing fields are rejected before calling TASK', async () => {
+    const before = stack.mock.requests.length;
+    const res = await stack.client().req('POST', '/api/login', { login: '', password: '' });
+    assert.equal(res.status, 400);
+    assert.equal(stack.mock.requests.length, before);
+  });
+
+  test('clerk without PO permission is refused', async () => {
+    const c = stack.client();
+    const res = await c.req('POST', '/api/login', { login: 'viewer@example.com', password: MOCK_PASSWORD, loginType: 0 });
+    assert.equal(res.status, 403);
+    assert.match(res.data.error, /not allowed to create purchase orders/);
+    assert.equal(c.cookie, '');
+  });
+
+  test('successful sign-in sets a secure session cookie and sends Key + Bearer to TASK', async () => {
+    stack.mock.requests.length = 0;
+    const c = stack.client();
+    const res = await c.req('POST', '/api/login', { login: 'manager@example.com', password: MOCK_PASSWORD, loginType: 0 });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.data.clerk, { id: 101, name: 'Sam Manager', email: 'manager@example.com', canApprove: true });
+    const cookie = res.headers.get('set-cookie');
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Strict/);
+    assert.doesNotMatch(cookie, /Max-Age/);
+
+    const [login, me] = stack.mock.requests;
+    assert.equal(login.path, '/api/v3/auth/clerk/login');
+    assert.equal(login.key, MOCK_API_KEY);
+    assert.equal(login.authorization, undefined);
+    assert.deepEqual(login.body, { Login: 'manager@example.com', Password: MOCK_PASSWORD, LoginType: 0 });
+    assert.equal(me.path, '/api/v3/auth/clerk/currentUser');
+    assert.match(me.authorization, /^Bearer /);
+    assert.equal(me.key, MOCK_API_KEY);
+
+    assert.equal((await c.req('GET', '/api/me')).status, 200);
+  });
+
+  test('sign out ends the session', async () => {
+    const c = await stack.signIn();
+    const out = await c.req('POST', '/api/logout', {});
+    assert.equal(out.status, 204);
+    assert.equal((await c.req('GET', '/api/me')).status, 401);
+  });
+
+  test('a TASK session expiry (440) signs the clerk out of this app', async () => {
+    const c = await stack.signIn();
+    stack.mock.expireTokens = true;
+    const res = await c.req('GET', '/api/suppliers');
+    assert.equal(res.status, 401);
+    assert.equal(res.data.code, 'session_expired');
+    stack.mock.expireTokens = false;
+    assert.equal((await c.req('GET', '/api/me')).status, 401);
+  });
+
+  test('API routes need a session', async () => {
+    const res = await stack.client().req('GET', '/api/suppliers');
+    assert.equal(res.status, 401);
+    assert.equal(res.data.code, 'signed_out');
+  });
+
+  test('writes must be JSON', async () => {
+    const res = await stack.client().req('POST', '/api/login', undefined, {
+      raw: 'login=a&password=b',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+    assert.equal(res.status, 415);
+  });
+});
+
+describe('reference data', () => {
+  test('locations are limited to the clerk and sorted by name', async () => {
+    const c = await stack.signIn();
+    const res = await c.req('GET', '/api/locations');
+    assert.deepEqual(res.data.locations, [
+      { locationNo: 12, venueNo: 2, name: 'Demo Store - Beach' },
+      { locationNo: 11, venueNo: 1, name: 'Demo Store - City' },
+    ]);
+  });
+
+  test('inactive suppliers are hidden (all pages are read)', async () => {
+    const c = await stack.signIn();
+    const res = await c.req('GET', '/api/suppliers');
+    assert.deepEqual(
+      res.data.suppliers.map((s) => s.name),
+      ['Demo Dairy', 'Demo Fresh Produce', 'Demo Packaging'],
+    );
+  });
+
+  test('products merge supplier codes, names and venue costs', async () => {
+    const c = await stack.signIn();
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=11');
+    assert.equal(res.status, 200);
+    const byCode = Object.fromEntries(res.data.products.map((p) => [p.code, p]));
+    assert.deepEqual(Object.keys(byCode).sort(), ['AVO-20', 'COR-12', 'LIME-5KG', 'ONR-10KG']); // TOM unavailable
+    assert.equal(byCode['AVO-20'].name, 'Avocados');
+    assert.equal(byCode['AVO-20'].caseCost, 45);
+    assert.equal(byCode['COR-12'].unitCost, 1.3); // derived from case cost / case qty
+    assert.equal(byCode['ONR-10KG'].caseCost, null); // no cost on file
+
+    const beach = await c.req('GET', '/api/suppliers/1/products?locationNo=12');
+    assert.equal(beach.data.products.find((p) => p.code === 'AVO-20').caseCost, 47);
+  });
+
+  test('locations the clerk cannot access are refused', async () => {
+    const c = await stack.signIn();
+    const res = await c.req('GET', '/api/suppliers/1/products?locationNo=13');
+    assert.equal(res.status, 403);
+  });
+
+  test('templates exclude deleted ones and return their lines', async () => {
+    const c = await stack.signIn();
+    const list = await c.req('GET', '/api/templates?supplierId=1&locationNo=11');
+    assert.deepEqual(list.data.templates, [{ id: 9001, name: 'Weekly produce' }]);
+    const items = await c.req('GET', '/api/templates/9001/items');
+    assert.equal(items.data.items.length, 3);
+    assert.deepEqual(items.data.items[1], { productSupplierId: 502, productId: 1002, cases: 2, units: 1, notes: '' });
+  });
+});
+
+describe('sending a purchase order', () => {
+  test('approver: PO is created, approved, emailed and marked as emailed', async () => {
+    const c = await stack.signIn();
+    stack.mock.requests.length = 0;
+    const res = await c.req('POST', '/api/orders', order());
+    assert.equal(res.status, 201, res.text);
+    const { poId } = res.data;
+    assert.equal(res.data.status, 1);
+    assert.equal(res.data.statusLabel, 'Approved');
+    assert.equal(res.data.lineCount, 2);
+    assert.equal(res.data.totalExGst, 2 * 45 + 3 * 2.25 + 18.5);
+    assert.equal(res.data.email.sent, true);
+    assert.equal(res.data.email.to, 'orders@produce.example');
+    assert.equal(res.data.email.markedInTask, true);
+
+    const created = stack.mock.requests.find((r) => r.method === 'POST' && r.path === '/api/v3/purchaseOrder');
+    assert.equal(created.body.OrderStatus, 7, 'created as Incomplete first');
+    assert.equal(created.body.ClerkID, 101);
+    assert.equal(created.body.SupplierID, 1);
+    assert.equal(created.body.StockLocationNo, 11);
+    assert.equal(created.body.DeliveryDate, `${tomorrow()}T00:00:00.000Z`);
+
+    const po = stack.mock.purchaseOrders.get(poId);
+    assert.equal(po.OrderStatus, 1);
+    assert.equal(po.ApprovedByClerkID, 101);
+    assert.equal(po.Emailed, true);
+    assert.ok(po.EmailedDate);
+    assert.equal(po.CustomerPO, 'Weekly produce');
+
+    const items = stack.mock.purchaseOrderItems.get(poId);
+    assert.equal(items.length, 2);
+    assert.deepEqual(
+      { ...items[0], PurchaseItemID: undefined },
+      {
+        PurchaseItemID: undefined,
+        PurchaseOrderID: poId,
+        ProductID: 1001,
+        ProductSupplierID: 501,
+        Cases: 2,
+        Units: 3,
+        CaseQty: 20,
+        TotalUnits: 43,
+        ExGST: 45,
+        UnitExGST: 2.25,
+      },
+    );
+
+    assert.equal(stack.mailer.sent.length, 1);
+    const mail = stack.mailer.sent[0];
+    assert.equal(mail.to, 'orders@produce.example');
+    assert.equal(mail.replyTo, 'manager@example.com');
+    assert.match(mail.subject, new RegExp(`Purchase Order #${poId}`));
+    assert.match(mail.html, /AVO-20/);
+    assert.match(mail.text, /Avocados/);
+    assert.match(mail.text, /Please deliver before 10am/);
+  });
+
+  test('the same idempotency key does not create a second PO', async () => {
+    const c = await stack.signIn();
+    const body = order({ idempotencyKey: 'abc123-def456-key' });
+    const first = await c.req('POST', '/api/orders', body);
+    const count = stack.mock.purchaseOrders.size;
+    const second = await c.req('POST', '/api/orders', body);
+    assert.equal(second.status, 200);
+    assert.equal(second.data.poId, first.data.poId);
+    assert.equal(stack.mock.purchaseOrders.size, count);
+    assert.equal(stack.mailer.sent.length, 1);
+  });
+
+  test('clerk without approval permission: saved as Awaiting approval, not emailed', async () => {
+    const c = await stack.signIn('crew@example.com');
+    const res = await c.req('POST', '/api/orders', order());
+    assert.equal(res.status, 201, res.text);
+    assert.equal(res.data.status, 0);
+    assert.equal(res.data.email.sent, false);
+    assert.equal(res.data.email.reason, 'awaiting_approval');
+    const po = stack.mock.purchaseOrders.get(res.data.poId);
+    assert.equal(po.OrderStatus, 0);
+    assert.equal(po.ApprovedByClerkID, undefined);
+    assert.equal(po.ClerkID, 102);
+    assert.equal(stack.mailer.sent.length, 0);
+
+    const retry = await c.req('POST', `/api/orders/${res.data.poId}/email`, {});
+    assert.equal(retry.status, 403);
+  });
+
+  test('a failed line rolls the PO back', async () => {
+    const c = await stack.signIn();
+    const before = stack.mock.purchaseOrders.size;
+    stack.mock.failItemForProductId = 1002;
+    const res = await c.req('POST', '/api/orders', order());
+    assert.equal(res.status, 502);
+    assert.equal(res.data.rolledBack, true);
+    assert.match(res.data.error, /Nothing was sent/);
+    assert.equal(stack.mock.purchaseOrders.size, before);
+    assert.equal(stack.mailer.sent.length, 0);
+  });
+
+  test('if rollback also fails, the PO number is reported', async () => {
+    const c = await stack.signIn();
+    stack.mock.failPurchaseOrderPut = true;
+    stack.mock.failDelete = true;
+    const res = await c.req('POST', '/api/orders', order());
+    assert.equal(res.status, 502);
+    assert.equal(res.data.rolledBack, false);
+    assert.ok(res.data.poId);
+    assert.match(res.data.error, new RegExp(`Check PO #${res.data.poId} in TASK`));
+  });
+
+  test('supplier without an email address: PO approved, not emailed', async () => {
+    const c = await stack.signIn();
+    const res = await c.req('POST', '/api/orders', order({ supplierId: 3, lines: [{ productSupplierId: 701, cases: 1 }] }));
+    assert.equal(res.status, 201, res.text);
+    assert.equal(res.data.status, 1);
+    assert.equal(res.data.email.reason, 'no_supplier_email');
+    assert.equal(stack.mailer.sent.length, 0);
+  });
+
+  test('email failure can be retried once, then is blocked as already emailed', async () => {
+    const c = await stack.signIn();
+    stack.mailer.fail = true;
+    const res = await c.req('POST', '/api/orders', order());
+    assert.equal(res.status, 201, res.text);
+    assert.equal(res.data.email.sent, false);
+    assert.equal(res.data.email.reason, 'send_failed');
+    assert.equal(stack.mock.purchaseOrders.get(res.data.poId).Emailed, false);
+
+    stack.mailer.fail = false;
+    const retry = await c.req('POST', `/api/orders/${res.data.poId}/email`, {});
+    assert.equal(retry.status, 200, retry.text);
+    assert.equal(retry.data.email.sent, true);
+    assert.equal(stack.mock.purchaseOrders.get(res.data.poId).Emailed, true);
+    assert.match(stack.mailer.sent[0].text, /Avocados/);
+
+    const again = await c.req('POST', `/api/orders/${res.data.poId}/email`, {});
+    assert.equal(again.status, 409);
+    assert.equal(stack.mailer.sent.length, 1);
+  });
+
+  test('validation: past delivery date, empty order, unknown product, other location', async () => {
+    const c = await stack.signIn();
+    let res = await c.req('POST', '/api/orders', order({ deliveryDate: '2020-01-01' }));
+    assert.equal(res.status, 400);
+    assert.ok(res.data.fields.deliveryDate);
+
+    res = await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 501, cases: 0, units: 0 }] }));
+    assert.equal(res.status, 400);
+    assert.ok(res.data.fields.lines);
+
+    res = await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 999999, cases: 1 }] }));
+    assert.equal(res.status, 400);
+    assert.match(res.data.error, /no longer available/);
+
+    res = await c.req('POST', '/api/orders', order({ lines: [{ productSupplierId: 501, cases: -1 }] }));
+    assert.equal(res.status, 400);
+
+    res = await c.req('POST', '/api/orders', order({ locationNo: 13 }));
+    assert.equal(res.status, 400);
+    assert.ok(res.data.fields.locationNo);
+  });
+
+  test('prices from the browser are ignored', async () => {
+    const c = await stack.signIn();
+    const res = await c.req(
+      'POST',
+      '/api/orders',
+      order({ lines: [{ productSupplierId: 501, cases: 1, units: 0, caseCost: 0.01, ExGST: 0.01 }] }),
+    );
+    assert.equal(res.status, 201, res.text);
+    assert.equal(res.data.totalExGst, 45);
+    assert.equal(stack.mock.purchaseOrderItems.get(res.data.poId)[0].ExGST, 45);
+  });
+});
+
+describe('idle timeout', () => {
+  test('sessions end after the idle period', async () => {
+    let clock = Date.now();
+    const s = await startStack({ env: { SESSION_IDLE_MINUTES: '30' }, now: () => clock });
+    try {
+      const c = await s.signIn();
+      clock += 29 * 60_000;
+      assert.equal((await c.req('GET', '/api/me')).status, 200);
+      clock += 31 * 60_000;
+      assert.equal((await c.req('GET', '/api/me')).status, 401);
+    } finally {
+      await s.close();
+    }
+  });
+});
