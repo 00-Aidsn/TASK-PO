@@ -127,6 +127,12 @@ h2 { font-size: 1.1rem; }
 .env-badge.prod { background: var(--ok-soft); color: var(--ok); }
 .field .hint { display: block; margin-top: 4px; font-weight: 400; }
 .history td { font-size: 0.9rem; vertical-align: top; }
+.acct-form { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0 12px; align-items: end; }
+.acct-form .btn { margin-bottom: 12px; }
+.acct-form .field > span:last-child { display: block; font-weight: 400; margin: 0; }
+.acct-table td { vertical-align: middle; }
+.acct-table td.actions-cell { white-space: nowrap; text-align: right; }
+.acct-table .btn { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; }
 .sync-section { margin-top: 16px; }
 .sync-section h3 { font-size: 1rem; margin: 0 0 4px; }
 .sync-section p { margin: 0 0 6px; }
@@ -386,6 +392,8 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
   .receive td.remove { grid-column: 1 / -1; }
   .receive td.remove:empty { display: none; }
 
+  .acct-form { grid-template-columns: 1fr; }
+  .acct-table td.actions-cell { text-align: left; }
   .history thead { display: none; }
   .history, .history tbody, .history tr, .history td { display: block; }
   .history tr { padding: 10px 0; border-bottom: 1px solid var(--border); }

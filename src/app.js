@@ -13,6 +13,7 @@ import { receivingRoutes } from './routes/receiving.js';
 import { ReceiptError } from './receiving.js';
 import { adminRoutes } from './routes/admin.js';
 import { createSettingsStore } from './settings.js';
+import { createAccountNumberStore } from './accountNumbers.js';
 import { SyncError } from './sync/clerkSync.js';
 import { HubError } from './sync/hubClient.js';
 
@@ -50,6 +51,11 @@ export function createApp({
   }),
   entra = null,
   sync = null,
+  // Each store's account number with each supplier (for purchase orders); kept with the admin data.
+  accountNumbers = createAccountNumberStore({
+    dataDir: config.admin.enabled ? config.settings.dataDir : null,
+    audit: (...args) => settings.audit(...args),
+  }),
 }) {
   // A new TASK URL or key signs every clerk out: their sessions belong to the old connection.
   settings.onChange(() => store.clear());
@@ -94,11 +100,11 @@ export function createApp({
 
   if (config.admin.enabled) {
     if (!entra) throw new Error('The admin panel is enabled but Entra sign-in was not set up');
-    app.use(adminRoutes({ config, settings, entra, clerkStore: store, sync }));
+    app.use(adminRoutes({ config, settings, entra, clerkStore: store, sync, accountNumbers }));
   }
   app.use('/api', authRoutes({ task, config, settings }));
   app.use('/api', lookupRoutes({ task, config }));
-  app.use('/api', orderRoutes({ task, mailer, config }));
+  app.use('/api', orderRoutes({ task, mailer, config, accountNumbers }));
   app.use('/api', receivingRoutes({ task, config }));
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 

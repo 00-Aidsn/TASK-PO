@@ -240,7 +240,8 @@ export async function startAdminStack({ env = {}, dataDir, withSync = false } = 
   const task = createTaskClient({ ...config.task, getConnection: settings.connection });
   const store = createSessionStore({ idleMinutes: config.sessionIdleMinutes });
   const sync = config.sync.enabled ? createClerkSync({ config, task, settings, hub: createHubClient(config.sync.hub) }) : null;
-  const app = createApp({ config, task, mailer: fakeMailer(), store, settings, entra: createEntraAuth(config.admin), sync });
+  const mailer = fakeMailer();
+  const app = createApp({ config, task, mailer, store, settings, entra: createEntraAuth(config.admin), sync });
   appServer.on('request', app);
 
   /** Runs the whole Microsoft sign-in as `user` ('admin', 'other', 'outsider'). Returns the final callback response. */
@@ -274,6 +275,7 @@ export async function startAdminStack({ env = {}, dataDir, withSync = false } = 
     entra: entra.state,
     hub: hub.state,
     sync,
+    mailer,
     client: () => jarClient(base),
     adminSignIn,
     clerkSignIn,

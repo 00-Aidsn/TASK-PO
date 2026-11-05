@@ -39,6 +39,11 @@ export function createMailer(mail) {
       const base = path.join(mail.outboxDir, `${stamp}-${slug}`);
       await fs.writeFile(`${base}.eml`, info.message);
       if (message.html) await fs.writeFile(`${base}.html`, message.html);
+      // Attachments (the PO's PDF and CSV) are also saved next to the email so they're easy to open.
+      for (const a of message.attachments || []) {
+        const safe = String(a.filename || 'attachment').replace(/[^A-Za-z0-9._-]+/g, '_');
+        await fs.writeFile(`${base}-${safe}`, a.content);
+      }
       console.log(`[mail:log] "${message.subject}" to ${message.to} written to ${base}.eml`);
       return { messageId: info.messageId, file: `${base}.eml` };
     },

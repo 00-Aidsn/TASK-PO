@@ -130,7 +130,6 @@ export function loadConfig(env = process.env) {
       mode: (env.MAIL_MODE || 'log').toLowerCase(),
       from: env.MAIL_FROM || '',
       cc: list(env.MAIL_CC),
-      showPrices: bool(env.MAIL_SHOW_PRICES, true),
       outboxDir: env.MAIL_OUTBOX_DIR || 'outbox',
       smtp: {
         host: env.SMTP_HOST || '',

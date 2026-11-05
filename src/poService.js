@@ -1,5 +1,6 @@
-import { formatMoney, renderPurchaseOrderEmail } from './emailTemplate.js';
-import { HIDDEN_REASONS, getCatalogue, getProductStatuses } from './catalogue.js';
+import { formatMoney } from './emailTemplate.js';
+import { HIDDEN_REASONS, getCatalogue, getProductStatuses, getStoreDetails, getUomNames } from './catalogue.js';
+import { buildPoDocument, renderPurchaseOrderEmail } from './poDocument.js';
 
 export const ORDER_STATUS = Object.freeze({
   AwaitingApproval: 0,
@@ -50,7 +51,7 @@ export class OrderError extends Error {
   }
 }
 
-const LIMITS = { customerPo: 50, comments: 1000, shipToAddress: 300, notes: 200, lines: 300, qty: 100000 };
+const LIMITS = { customerPo: 50, comments: 1000, deliveryInstructions: 300, notes: 200, lines: 300, qty: 100000 };
 
 function positiveInt(value) {
   const n = Number(value);
@@ -113,7 +114,13 @@ export function validateOrderInput(body, { today }) {
 
   const customerPo = text(body.customerPo, LIMITS.customerPo, 'customerPo', fields);
   const comments = text(body.comments, LIMITS.comments, 'comments', fields);
-  const shipToAddress = text(body.shipToAddress, LIMITS.shipToAddress, 'shipToAddress', fields);
+  // Delivery instructions go into the PO comments; "Ship To" is the store's address from TASK.
+  const deliveryInstructions = text(
+    body.deliveryInstructions ?? body.shipToAddress,
+    LIMITS.deliveryInstructions,
+    'deliveryInstructions',
+    fields,
+  );
 
   const lines = [];
   if (!Array.isArray(body.lines)) {
@@ -167,7 +174,7 @@ export function validateOrderInput(body, { today }) {
   if (Object.keys(fields).length) {
     throw new ValidationError('Please fix the highlighted fields.', fields);
   }
-  return { supplierId, locationNo, deliveryDate, customerPo, comments, shipToAddress, lines, expectedSupplierEmail, idempotencyKey };
+  return { supplierId, locationNo, deliveryDate, customerPo, comments, deliveryInstructions, lines, expectedSupplierEmail, idempotencyKey };
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -255,8 +262,11 @@ export function buildPurchaseOrderModel({ input, clerk, nowIso }) {
     Emailed: false,
   };
   if (input.customerPo) model.CustomerPO = input.customerPo;
-  if (input.comments) model.Comments = input.comments;
-  if (input.shipToAddress) model.ShipToAddress = input.shipToAddress;
+  const comments = [input.comments, input.deliveryInstructions ? `Delivery instructions: ${input.deliveryInstructions}` : '']
+    .filter(Boolean)
+    .join('\n');
+  if (comments) model.Comments = comments;
+  if (input.storeAddress) model.ShipToAddress = input.storeAddress; // the store's address from TASK
   if (input.deliveryDate) model.DeliveryDate = `${input.deliveryDate}T00:00:00.000Z`;
   return model;
 }
@@ -326,43 +336,39 @@ export async function createPurchaseOrder({ task, token, clerk, input, pricedLin
   return { poId, status: finalStatus, statusLabel: STATUS_LABELS[finalStatus] };
 }
 
-/** Builds email lines from what TASK actually stored for the PO. */
-export function emailLinesFromItems(items, catalogue, productNames = new Map()) {
-  return items.map((item) => {
-    const product = catalogue?.all.get(Number(item.ProductSupplierID));
-    const caseQty = product?.caseQty ?? (Number(item.CaseQty) > 0 ? Number(item.CaseQty) : 1);
-    const cases = Number(item.Cases) || 0;
-    const units = Number(item.Units) || 0;
-    const caseCost = product?.caseCost ?? (typeof item.ExGST === 'number' ? item.ExGST : null);
-    const unitCost = product?.unitCost ?? (typeof item.UnitExGST === 'number' ? item.UnitExGST : null);
-    const lineExGst = typeof caseCost === 'number' && typeof unitCost === 'number' ? round2(cases * caseCost + units * unitCost) : null;
-    return {
-      code: product?.code || '',
-      name: product?.name || productNames.get(Number(item.ProductID)) || `Product ${item.ProductID}`,
-      pack: product?.caseDescription || (caseQty > 1 ? `${caseQty} per case` : ''),
-      cases,
-      units,
-      caseCost,
-      lineExGst,
-      notes: item.Notes || '',
-    };
-  });
-}
-
 /**
- * Emails an approved PO to the supplier, then marks it as emailed in TASK.
+ * Emails an approved PO to the supplier in the Mad Mex purchase order format (see poDocument.js),
+ * with the same purchase order attached as a PDF and a CSV, then marks it as emailed in TASK.
+ * Everything on it is read back from TASK, so the email shows what TASK actually holds.
  * Returns { sent, to, cc, markedInTask, warning? }.
  */
-export async function emailPurchaseOrder({ task, session, mailer, config, poId, supplier, location, catalogue, now = () => new Date() }) {
+export async function emailPurchaseOrder({
+  task,
+  session,
+  mailer,
+  config,
+  poId,
+  supplier,
+  location,
+  catalogue,
+  accountNumbers,
+  now = () => new Date(),
+}) {
   const token = session.accessToken;
   const clerk = session.clerk;
-  const [po, items] = await Promise.all([task.getPurchaseOrder(token, poId), task.getPurchaseOrderItems(token, poId)]);
+  const [po, items, store, uomNames] = await Promise.all([
+    task.getPurchaseOrder(token, poId),
+    task.getPurchaseOrderItems(token, poId),
+    getStoreDetails(task, session, location.locationNo),
+    getUomNames(task, session),
+  ]);
   if (!po) throw new OrderError(`TASK could not find purchase order #${poId}.`, { poId });
   if (!items.length) throw new OrderError(`Purchase order #${poId} has no lines in TASK, so it was not emailed.`, { poId });
 
-  // Product codes, case sizes and names for the email come live from TASK.
+  // Supplier codes, case sizes, names and units come live from TASK.
   catalogue ??= await getCatalogue(task, session, supplier.id, location, {
     ...config.catalogue,
+    requireVenueCost: false,
     onlyProductSupplierIds: new Set(items.map((i) => Number(i.ProductSupplierID))),
   });
   const unknown = items.filter((i) => !catalogue.all.has(Number(i.ProductSupplierID))).map((i) => i.ProductID);
@@ -372,16 +378,19 @@ export async function emailPurchaseOrder({ task, session, mailer, config, poId, 
     for (const [id, p] of statuses) if (p.name) productNames.set(id, p.name);
   }
 
-  const email = renderPurchaseOrderEmail({
-    companyName: config.companyName,
+  const doc = buildPoDocument({
     po: { ...po, PurchaseOrderID: poId },
+    items,
     supplier,
-    location,
-    clerk,
-    lines: emailLinesFromItems(items, catalogue, productNames),
-    showPrices: config.mail.showPrices,
+    venueName: store?.name || location.name,
+    shipTo: po.ShipToAddress || store?.address || '',
+    accountNo: accountNumbers?.get(supplier.id, location.locationNo) || '',
+    catalogue,
+    productNames,
+    uomNames,
     timeZone: config.displayTimeZone,
   });
+  const email = await renderPurchaseOrderEmail({ doc, companyName: config.companyName });
 
   const to = supplier.email;
   const cc = config.mail.cc;
@@ -392,6 +401,7 @@ export async function emailPurchaseOrder({ task, session, mailer, config, poId, 
     subject: email.subject,
     text: email.text,
     html: email.html,
+    attachments: email.attachments,
   });
 
   // The email has gone; recording it in TASK is best-effort and must not trigger a resend.

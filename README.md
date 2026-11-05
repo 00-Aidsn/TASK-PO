@@ -21,6 +21,55 @@ A small web app for Mad Mex clerks to build a purchase order (PO) in **TASK** (X
 
 Prices are never taken from the browser. Case and unit costs come from TASK supplier venue costs for the chosen location's venue.
 
+## The supplier purchase order
+
+Every PO emailed to a supplier follows the Mad Mex purchase order format.
+- **Email body:** the layout below, as HTML, with a matching plain-text version.
+- **PDF attachment:** `PurchaseOrder_<no>.pdf`, the same layout, printable, with page numbers.
+- **CSV attachment:** `PurchaseOrder_<no>.csv`, the same layout, opening cleanly in Excel.
+
+Everything on it is read back from TASK after the PO is saved, so it shows what TASK actually holds.
+
+```
+Purchase Order
+
+Order No:    782296
+Ordered:     5/11/2026 10:19:57 AM
+Required:    7/11/2026 12:00:00 AM
+Contact:
+Venue:       Waurn Ponds
+Account No:  MADMEXWAUR
+______________________________________________
+Supplier:                 Ship To:
+MorCo Fresh VIC           Shop T980B, 173-179 Colac Road, ..., Grovedale, VIC, 3216
+VIC
+Comments:
+______________________________________________
+Supplier Code | Product Description | Cases | Units | Total | UOM | Case Cost | Unit Cost | Total Cost
+MM10000       | Avocado (10kg)      | 2     | 0     | 20    |     | $61.00    | $6.10     | $122.00
+...
+______________________________________________
+SubTotal  $484.05
+Tax       $0.00
+TOTAL     $484.05
+______________________________________________
+```
+
+| Field | Comes from |
+|---|---|
+| Order No | The TASK PO number |
+| Ordered | When the PO was created, in `DISPLAY_TIMEZONE`, as `d/M/yyyy h:mm:ss AM` |
+| Required | The requested delivery date, at 12:00:00 AM |
+| Contact | The **Contact** on the supplier's TASK record |
+| Venue, Ship To | The store's name and address in TASK (`GET /terminals/locations`). New POs also store that address as the PO's Ship To, as TASK does. |
+| Account No | The store's account number with that supplier, from the **Supplier account numbers** list in the admin panel. Blank if not set. |
+| Supplier block | The supplier's name, address lines, then state and postcode, from TASK |
+| Comments | The clerk's comments, plus their delivery instructions (`Delivery instructions: ...`) |
+| Lines | In PO line order: supplier code; product name; cases; units; total units (cases × case size + units); UOM (TASK's unit name for the supplier product); case cost; unit cost; line total. Costs are ex GST. |
+| SubTotal / Tax / TOTAL | SubTotal is the sum of the lines; Tax is the PO's tax figure in TASK; TOTAL is SubTotal + Tax |
+
+A test checks the sample order above (MorCo Fresh VIC to Waurn Ponds) line by line against the required format.
+
 ## Live, active data only
 
 Supplier, supplier product code, supplier venue cost and product data are read **live from TASK every time**. Nothing is cached. The only exception is the clerk's own location list, which is kept for 5 minutes.
@@ -162,6 +211,10 @@ Safeguards:
 - **test** the current connection, or a new address and key, against TASK (`GET /auth/currentApp`) without saving anything.
 - **change** the address, key and environment name. A new address or key is saved only if TASK accepts it.
 - see the **change history**: sign-ins, refused sign-ins, and every change, with who made it and when.
+- keep the **Supplier account numbers** (each store's account number with each supplier, shown as **Account No** on POs):
+  - **Adding one:** choose the supplier and store from lists read from TASK (this needs the hub sync clerk set up), or type their TASK numbers.
+  - **Bulk entry:** **Download CSV**, edit in Excel, then **Import CSV**. Columns: Supplier ID, Supplier, Store No, Store, Account No. A blank account number removes that row; "replace the whole list" makes the file the complete list.
+  - **Where it's kept:** in `DATA_DIR/account-numbers.json`, with every change in the change history.
 
 **How a change applies everywhere:**
 - Every TASK call reads the current address and key, so a change applies at once to sign-in, ordering, stock levels and receiving.
@@ -259,7 +312,6 @@ The central hub (Supabase) is the **master list of staff**. The sync keeps TASK 
 | `MAIL_MODE` | `log` | `log` writes emails to `MAIL_OUTBOX_DIR`; `smtp` sends them |
 | `MAIL_FROM` | (blank) | Sender address (required for `smtp`) |
 | `MAIL_CC` | (blank) | Comma-separated copy addresses, e.g. a purchasing inbox |
-| `MAIL_SHOW_PRICES` | `true` | Include costs and subtotal in the supplier email |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASS` | (blank) / 587 / false / (blank) / (blank) | SMTP relay, from IT |
 
 ## TASK API endpoints used
@@ -308,7 +360,14 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - On hand matches what TASK shows for the store.
    - TASK stock is counted in the same units as PO **Units**, i.e. one case = `CaseQty` units. The suggested cases assume this.
    - Min and max levels are maintained in TASK for the products stores order.
-7. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
+7. Check the supplier PO in `./outbox`: the `.html` email body, the `.pdf` and the `.csv` are all saved there.
+   - Compare it with a PO printed from TASK for the same order.
+   - **Ship To and Venue:** come from TASK's store records. Clerks' accounts must be allowed to read `GET /terminals/locations`; if they can't, Ship To falls back to what's on the PO.
+   - **UOM:** shows TASK's unit names (`GET /lookup/recipeSizeTypes`) for the supplier product's `UomSizeTypeId`.
+   - **Tax:** is TASK's figure for the PO. Check it's right for GST-able items such as packaging.
+   - **Ordered times:** are shown in `DISPLAY_TIMEZONE`. Stores in another time zone (e.g. WA or QLD) will show that zone's time.
+
+   Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
 8. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
 9. Confirm the admin panel:
    - Only you can sign in. Ask a colleague to try `/admin`: they should be refused, and the refusal should appear in the change history.
@@ -344,6 +403,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - admin panel: Entra sign-in (PKCE, state, nonce, replayed or forged callbacks, other users and other tenants refused, object-ID allow-list); key masking; connection tests; approved hosts only; saves that TASK rejects aren't stored; a change switching every TASK call to the new server and key and signing clerks out; encryption at rest and restart; change history without key material; changes from other websites blocked
 - hub sync: preview changes nothing; matching by link, email, then name (approval-only, exact pairs); scheduled runs never apply name matches; only synced fields change and HR data and passwords are untouched; creation defaults; deactivation and reactivation; protected admins and the sync account; size limits held; an empty or unreachable hub changes nothing; TASK session renewal; links kept per TASK server; history without personal values
 - hosting: `/healthz`, the Cloudflare-only origin header (including secret rotation), and `TRUST_PROXY` hop counts giving real clerk IPs to the rate limiter
+- supplier purchase order: the sample order reproduced exactly; dates, CSV layout, quoting and formula safety; PDF content and multi-page orders (checked with `pdftotext`); account numbers (add, change, remove, CSV import/export, shown on the emailed PO)
 - receiving: permissions; the open PO list; full, short and closed-short deliveries; invoices completed or left for a manager; cost changes; items not on the PO; deliveries with no PO; duplicate invoice numbers; rollback and partial failures; validation; double submits
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard
@@ -358,11 +418,13 @@ src/
   session.js       in-memory sessions, cookie, idle timeout
   catalogue.js     locations; live suppliers, supplier products, venue costs, product status and stock; templates
   poService.js     order validation, PO creation with rollback, supplier email
+  poDocument.js    the supplier purchase order format: email text/HTML, PDF and CSV
+  accountNumbers.js  each store's account number with each supplier
   receiving.js     receipt validation, invoice + PO updates with rollback
   settings.js      live TASK URL/key/environment, encrypted at rest, change history
   admin/entra.js   Microsoft Entra ID sign-in (OpenID Connect) and the admin allow-list
   sync/            central hub (Supabase) reader and the hub -> TASK clerk sync
-  emailTemplate.js supplier email (HTML + text)
+  emailTemplate.js small HTML/money helpers
   mailer.js        SMTP or log-to-outbox
   routes/          /api/login, /api/logout, /api/me, lookups, orders, receiving, admin
 public/            browser UI (plain HTML/CSS/JS, no build step); admin.html + admin.js for /admin

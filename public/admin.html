@@ -76,6 +76,36 @@
         </form>
       </div>
 
+      <div class="card" id="acct-card" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Supplier account numbers</h2>
+          <div class="filters">
+            <a class="btn" href="/api/admin/account-numbers/export" download>Download CSV</a>
+            <label class="btn" for="acct-file">Import CSV</label>
+            <input type="file" id="acct-file" accept=".csv,text/csv" hidden>
+          </div>
+        </div>
+        <p class="muted small">
+          Shown as "Account No" on purchase orders. Each store can have a different account number with each supplier.
+          To fill in many at once, download the CSV, add rows in Excel, and import it.
+        </p>
+        <p class="muted small" id="acct-lists-note"></p>
+        <form id="acct-form" class="acct-form" novalidate>
+          <label class="field"><span>Supplier</span><span id="acct-supplier-slot"></span></label>
+          <label class="field"><span>Store</span><span id="acct-store-slot"></span></label>
+          <label class="field"><span>Account No</span><input id="acct-number" maxlength="50" autocomplete="off" placeholder="e.g. MADMEXWAUR"></label>
+          <button type="submit" class="btn btn-primary" id="acct-save">Save</button>
+        </form>
+        <label class="check"><input type="checkbox" id="acct-replace"> When importing, replace the whole list (rows not in the file are removed)</label>
+        <div class="notice" id="acct-message" role="status" hidden></div>
+        <div class="table-wrap">
+          <table class="history acct-table">
+            <thead><tr><th scope="col">Supplier</th><th scope="col">Store</th><th scope="col">Account No</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+            <tbody id="acct-body"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card" id="sync-card" hidden>
         <div class="card-head">
           <h2 class="card-title">Central hub → TASK clerks</h2>

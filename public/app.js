@@ -695,7 +695,8 @@
     summaryRows($('review-summary'), [
       ['Supplier', supplier.name],
       ['Email to', supplier.email || 'No email address in TASK'],
-      ['Deliver to', shipTo ? `${location.name}, ${shipTo}` : location.name],
+      ['Deliver to', location.name],
+      ['Delivery instructions', shipTo],
       ['Delivery date', formatDate(deliveryDate) || 'Not specified'],
       ['Our reference', $('customer-po').value.trim()],
       ['Ordered by', state.clerk.name],
@@ -739,7 +740,7 @@
       locationNo: state.locationNo,
       deliveryDate: $('delivery-date').value || undefined,
       customerPo: $('customer-po').value.trim() || undefined,
-      shipToAddress: $('ship-to').value.trim() || undefined,
+      deliveryInstructions: $('ship-to').value.trim() || undefined,
       comments: $('comments').value.trim() || undefined,
       // What the clerk reviewed: the server re-checks these against live TASK data before sending.
       lines: lines.map((l) => ({

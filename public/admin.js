@@ -77,7 +77,7 @@
     show($('signed-out'), false);
     show($('signed-in'), true);
     $('admin-oid').textContent = `Signed in as ${admin.email}. Your Microsoft Entra object ID is ${admin.oid}. Add it to ADMIN_ALLOWED_OBJECT_IDS to tie admin access to your account permanently.`;
-    await Promise.all([loadSettings(), loadAudit(), loadSyncStatus()]);
+    await Promise.all([loadSettings(), loadAudit(), loadSyncStatus(), loadAccountNumbers()]);
   }
 
   // ---------------------------------------------------------------- settings
@@ -201,6 +201,15 @@
     const d = entry.details || {};
     if (entry.action === 'admin_signed_in') return 'Signed in to the admin panel';
     if (entry.action === 'admin_sign_in_refused') return 'Sign-in refused: not on the admin allow-list';
+    if (entry.action === 'account_number_set') {
+      return `Account No for ${d.supplierName || `supplier ${d.supplierId}`} at ${d.locationName || `store ${d.locationNo}`}: ${d.accountNo?.from || '(none)'} → ${d.accountNo?.to}`;
+    }
+    if (entry.action === 'account_number_removed') {
+      return `Account No removed for ${d.supplierName || `supplier ${d.supplierId}`} at ${d.locationName || `store ${d.locationNo}`}`;
+    }
+    if (entry.action === 'account_numbers_imported') {
+      return `Account numbers imported${d.replace ? ' (replaced the list)' : ''}: ${d.added} added, ${d.changed} changed, ${d.removed} removed`;
+    }
     if (entry.action === 'clerk_sync') {
       const sm = d.summary || {};
       const parts = [`${sm.done || 0} applied`];
@@ -253,6 +262,130 @@
     }
     if (logoutUrl) window.location.assign(logoutUrl);
     else showSignedOut('You have signed out.');
+  });
+
+  // ---------------------------------------------------------------- supplier account numbers
+  let acct = { entries: [], lists: null };
+
+  function acctControls() {
+    const { lists } = acct;
+    const select = (id, options, placeholder) =>
+      el('select', { id }, el('option', { value: '', text: placeholder }), options.map((o) => el('option', { value: String(o.value), text: o.label })));
+    const number = (id, placeholder) => el('input', { id, type: 'number', min: '1', step: '1', inputmode: 'numeric', placeholder });
+    $('acct-supplier-slot').replaceChildren(
+      lists ? select('acct-supplier', lists.suppliers.map((s) => ({ value: s.id, label: s.name })), 'Choose a supplier…') : number('acct-supplier', 'TASK supplier ID'),
+    );
+    $('acct-store-slot').replaceChildren(
+      lists ? select('acct-store', lists.stores.map((s) => ({ value: s.locationNo, label: s.name })), 'Choose a store…') : number('acct-store', 'TASK location number'),
+    );
+  }
+
+  const supplierLabel = (e) => (e.supplierName ? `${e.supplierName} (#${e.supplierId})` : `Supplier #${e.supplierId}`);
+  const storeLabel = (e) => (e.locationName ? `${e.locationName} (#${e.locationNo})` : `Store #${e.locationNo}`);
+
+  function renderAcctTable() {
+    const body = $('acct-body');
+    if (!acct.entries.length) {
+      body.replaceChildren(el('tr', {}, el('td', { colspan: '4', className: 'muted', text: 'No account numbers yet.' })));
+      return;
+    }
+    body.replaceChildren(
+      ...acct.entries.map((e) =>
+        el(
+          'tr',
+          {},
+          el('td', { 'data-label': 'Supplier', text: supplierLabel(e) }),
+          el('td', { 'data-label': 'Store', text: storeLabel(e) }),
+          el('td', { 'data-label': 'Account No', text: e.accountNo }),
+          el(
+            'td',
+            { className: 'actions-cell' },
+            el('button', { type: 'button', className: 'btn', text: 'Edit', 'data-edit': `${e.supplierId}:${e.locationNo}` }),
+            ' ',
+            el('button', { type: 'button', className: 'btn', text: 'Remove', 'data-remove': `${e.supplierId}:${e.locationNo}` }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  async function loadAccountNumbers() {
+    try {
+      const data = await api('GET', '/account-numbers');
+      show($('acct-card'), data.editable);
+      acct = { entries: data.entries, lists: data.lists };
+      $('acct-lists-note').textContent = data.listsMessage || '';
+      acctControls();
+      renderAcctTable();
+    } catch (err) {
+      if (err.status !== 401) show($('acct-card'), false);
+    }
+  }
+
+  async function saveAccountNumber(body, doneMessage) {
+    try {
+      const result = await api('PUT', '/account-numbers', body);
+      setMessage($('acct-message'), result.changed ? doneMessage : 'Nothing changed.', result.changed ? 'ok' : '');
+      await Promise.all([loadAccountNumbers(), loadAudit()]);
+      return true;
+    } catch (err) {
+      if (err.status !== 401) {
+        const extra = err.data && err.data.fields ? ` ${Object.values(err.data.fields).join('. ')}.` : '';
+        setMessage($('acct-message'), `${err.message}${extra}`, 'warn');
+      }
+      return false;
+    }
+  }
+
+  $('acct-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const supplierId = Number($('acct-supplier').value);
+    const locationNo = Number($('acct-store').value);
+    const pick = (list, id, key) => (list || []).find((x) => x[key] === id)?.name || '';
+    const ok = await saveAccountNumber(
+      {
+        supplierId,
+        locationNo,
+        accountNo: $('acct-number').value.trim(),
+        supplierName: pick(acct.lists && acct.lists.suppliers, supplierId, 'id'),
+        locationName: pick(acct.lists && acct.lists.stores, locationNo, 'locationNo'),
+      },
+      'Saved. New purchase orders for that supplier and store will show it.',
+    );
+    if (ok) $('acct-number').value = '';
+  });
+
+  $('acct-body').addEventListener('click', async (e) => {
+    const edit = e.target.closest('button[data-edit]');
+    const remove = e.target.closest('button[data-remove]');
+    const id = (edit || remove)?.getAttribute(edit ? 'data-edit' : 'data-remove');
+    if (!id) return;
+    const [supplierId, locationNo] = id.split(':').map(Number);
+    const entry = acct.entries.find((x) => x.supplierId === supplierId && x.locationNo === locationNo);
+    if (edit) {
+      $('acct-supplier').value = String(supplierId);
+      $('acct-store').value = String(locationNo);
+      $('acct-number').value = entry ? entry.accountNo : '';
+      $('acct-number').focus();
+      return;
+    }
+    if (!window.confirm(`Remove the account number for ${entry ? `${supplierLabel(entry)} at ${storeLabel(entry)}` : 'this supplier and store'}?`)) return;
+    await saveAccountNumber({ supplierId, locationNo, accountNo: '' }, 'Removed.');
+  });
+
+  $('acct-file').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const replace = $('acct-replace').checked;
+    if (replace && !window.confirm('Replace the whole account number list with this file? Rows not in the file will be removed.')) return;
+    try {
+      const result = await api('POST', '/account-numbers/import', { csv: await file.text(), replace });
+      setMessage($('acct-message'), `Imported ${file.name}: ${result.added} added, ${result.changed} changed, ${result.removed} removed (${result.total} in the list).`, 'ok');
+      await Promise.all([loadAccountNumbers(), loadAudit()]);
+    } catch (err) {
+      if (err.status !== 401) setMessage($('acct-message'), err.message, 'warn');
+    }
   });
 
   // ---------------------------------------------------------------- central hub -> TASK clerk sync

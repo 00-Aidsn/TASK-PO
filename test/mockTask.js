@@ -104,13 +104,20 @@ export function sampleData() {
         },
       },
     ],
+    // GET /terminals/locations (LocationBusinessModel): store names and addresses for purchase orders
+    terminalLocations: [
+      { LocationNo: 11, LocationFriendlyName: 'Demo Store - City', StreetAddress: 'Shop 1, 100 Collins Street', Suburb: 'Melbourne', State: 'VIC', PostCode: '3000', IsActive: true },
+      { LocationNo: 12, LocationFriendlyName: 'Demo Store - Beach', StreetAddress: '5 Esplanade', Suburb: 'St Kilda', State: 'VIC', PostCode: '3182', IsActive: true },
+      { LocationNo: 13, LocationFriendlyName: 'Demo Store - West', StreetAddress: '', Suburb: '', State: '', PostCode: '', IsActive: true },
+    ],
+    sizeTypes: { 1: 'Each', 2: 'kg', 3: 'Litre' },
     stockLocations: [
       { LocationNo: 11, LocationFriendlyName: 'Demo Store - City', LocationDescription: 'CITY', VenueNo: 1 },
       { LocationNo: 12, LocationFriendlyName: 'Demo Store - Beach', LocationDescription: 'BEACH', VenueNo: 2 },
       { LocationNo: 13, LocationFriendlyName: 'Demo Store - West', LocationDescription: 'WEST', VenueNo: 3 },
     ],
     suppliers: [
-      { SupplierID: 1, SupplierName: 'Demo Fresh Produce', EmailAddress: 'orders@produce.example', IsActive: true },
+      { SupplierID: 1, SupplierName: 'Demo Fresh Produce', EmailAddress: 'orders@produce.example', IsActive: true, Contact: 'Jo Fresh', Address: '10 Market Street', State: 'VIC', PostCode: 3000 },
       { SupplierID: 2, SupplierName: 'Demo Packaging', EmailAddress: 'sales@packaging.example', IsActive: true },
       { SupplierID: 3, SupplierName: 'Demo Dairy', EmailAddress: '', IsActive: true },
       { SupplierID: 4, SupplierName: 'Inactive Supplier', EmailAddress: 'old@inactive.example', IsActive: false },
@@ -136,8 +143,8 @@ export function sampleData() {
     ),
     productCodes: {
       1: [
-        { ProductSupplierID: 501, SupplierID: 1, ProductID: 1001, SupplierProductCode: 'AVO-20', CaseQty: 20, CaseDescription: 'Tray of 20' },
-        { ProductSupplierID: 502, SupplierID: 1, ProductID: 1002, SupplierProductCode: 'LIME-5KG', CaseQty: 5, CaseDescription: '5 kg box' },
+        { ProductSupplierID: 501, SupplierID: 1, ProductID: 1001, SupplierProductCode: 'AVO-20', CaseQty: 20, CaseDescription: 'Tray of 20', UomSizeTypeId: 1 },
+        { ProductSupplierID: 502, SupplierID: 1, ProductID: 1002, SupplierProductCode: 'LIME-5KG', CaseQty: 5, CaseDescription: '5 kg box', UomSizeTypeId: 2 },
         { ProductSupplierID: 503, SupplierID: 1, ProductID: 1003, SupplierProductCode: 'COR-12', CaseQty: 12, CaseDescription: '12 bunches' },
         { ProductSupplierID: 504, SupplierID: 1, ProductID: 1004, SupplierProductCode: 'ONR-10KG', CaseQty: 10, CaseDescription: '10 kg sack' },
         { ProductSupplierID: 505, SupplierID: 1, ProductID: 1005, SupplierProductCode: 'TOM-10KG', CaseQty: 10, CaseDescription: '10 kg box', IsUnavailable: true },
@@ -369,6 +376,8 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
 
   app.get(`${base}/auth/clerk/currentUser`, (req, res) => res.json(req.account.clerk));
   app.get(`${base}/stock/stocklocations`, (req, res) => paged(req, res, state.data.stockLocations));
+  app.get(`${base}/terminals/locations`, (req, res) => paged(req, res, state.data.terminalLocations));
+  app.get(`${base}/lookup/recipeSizeTypes`, (req, res) => res.json(state.data.sizeTypes));
   app.get(`${base}/products/location/:locationNo/stock/products`, (req, res) => {
     if (state.failStock) return res.status(state.failStock).json({ Message: 'Stock service unavailable' });
     const locationNo = Number(req.params.locationNo);

@@ -156,6 +156,10 @@ export function createTaskClient({
 
     // --- Reference data ---------------------------------------------------
     getStockLocations: (token) => getAllPages('/stock/stocklocations', { token }),
+    /** Store details incl. address (LocationBusinessModel: StreetAddress, Suburb, State, PostCode). */
+    getTerminalLocations: (token) => getAllPages('/terminals/locations', { token }),
+    /** Units of measure: { "id": "name" } (used for UomSizeTypeId on supplier products). */
+    getSizeTypes: (token) => request('GET', '/lookup/recipeSizeTypes', { token }),
 
     // --- Products ---------------------------------------------------------
     /** Product record (ProductBusinessModel): IsActive, ProductDescription, POSDisplay, ... */

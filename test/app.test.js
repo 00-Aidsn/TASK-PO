@@ -268,6 +268,7 @@ describe('sending a purchase order', () => {
     assert.equal(po.Emailed, true);
     assert.ok(po.EmailedDate);
     assert.equal(po.CustomerPO, 'Weekly produce');
+    assert.equal(po.ShipToAddress, 'Shop 1, 100 Collins Street, Melbourne, VIC, 3000');
 
     const items = stack.mock.purchaseOrderItems.get(poId);
     assert.equal(items.length, 2);
@@ -291,10 +292,23 @@ describe('sending a purchase order', () => {
     const mail = stack.mailer.sent[0];
     assert.equal(mail.to, 'orders@produce.example');
     assert.equal(mail.replyTo, 'manager@example.com');
-    assert.match(mail.subject, new RegExp(`Purchase Order #${poId}`));
+    assert.equal(mail.subject, `Purchase Order ${poId} - Mad Mex Demo Store - City`);
     assert.match(mail.html, /AVO-20/);
-    assert.match(mail.text, /Avocados/);
-    assert.match(mail.text, /Please deliver before 10am/);
+    assert.match(mail.text, new RegExp(`^Purchase Order\n\nOrder No:\t${poId}\n`));
+    assert.match(mail.text, /\nVenue:\tDemo Store - City\n/);
+    assert.match(mail.text, /\nContact:\tJo Fresh\n/);
+    assert.match(mail.text, /\nComments:\tPlease deliver before 10am\n/);
+    assert.match(mail.text, /\nAVO-20\t\| Avocados\t\| 2\t\| 3\t\| 43\t\| Each\t\| \$45\.00\t\| \$2\.25\t\| \$96\.75\n/);
+    assert.match(mail.text, /\nShop 1, 100 Collins Street, Melbourne, VIC, 3000\n/); // Ship To: the store's address in TASK
+    assert.deepEqual(
+      mail.attachments.map((a) => [a.filename, a.contentType]),
+      [
+        [`PurchaseOrder_${poId}.pdf`, 'application/pdf'],
+        [`PurchaseOrder_${poId}.csv`, 'text/csv; charset=utf-8'],
+      ],
+    );
+    assert.equal(mail.attachments[0].content.subarray(0, 5).toString(), '%PDF-');
+    assert.match(mail.attachments[1].content.toString('utf8'), /\r\nAVO-20,Avocados,2,3,43,Each,\$45\.00,\$2\.25,\$96\.75\r\n/);
   });
 
   test('the same idempotency key does not create a second PO', async () => {

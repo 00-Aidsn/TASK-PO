@@ -1,57 +1,15 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { escapeHtml, formatDateOnly, renderPurchaseOrderEmail } from '../src/emailTemplate.js';
+import { escapeHtml } from '../src/emailTemplate.js';
 import { createSessionStore, parseCookies } from '../src/session.js';
 import { createTaskClient, TaskApiError } from '../src/taskClient.js';
 import { loadConfig } from '../src/config.js';
 import { validateOrderInput, todayIn } from '../src/poService.js';
 import { getStockLevels, mapLimit, suggestCases } from '../src/catalogue.js';
 
-describe('email template', () => {
-  const base = {
-    companyName: 'Mad Mex',
-    po: { PurchaseOrderID: 77, Created: '2026-11-05T01:00:00Z', DeliveryDate: '2026-11-10T00:00:00.000Z', Comments: '<script>alert(1)</script>' },
-    supplier: { name: 'Demo & Sons', email: 'a@b.example' },
-    location: { name: 'City <1>' },
-    clerk: { name: 'Sam', email: 'sam@example.com' },
-    lines: [
-      { code: 'X<1>', name: 'Napkins <white>', pack: '', cases: 1, units: 2, caseCost: 10, lineExGst: 12, notes: '"quoted"' },
-      { code: '', name: 'No cost', pack: '6 x 2 kg', cases: 1, units: 0, caseCost: null, lineExGst: null, notes: '' },
-    ],
-    showPrices: true,
-    timeZone: 'Australia/Sydney',
-  };
-
-  test('escapes every value in the HTML', () => {
-    const { html } = renderPurchaseOrderEmail(base);
-    assert.ok(!html.includes('<script>'));
-    assert.ok(html.includes('&lt;script&gt;'));
-    assert.ok(html.includes('Napkins &lt;white&gt;'));
-    assert.ok(html.includes('Demo &amp; Sons'));
-    assert.ok(html.includes('&quot;quoted&quot;'));
-  });
-
-  test('includes PO details, subtotal and a note about unpriced lines', () => {
-    const { subject, text, html, subtotal, unpriced } = renderPurchaseOrderEmail(base);
-    assert.equal(subject, 'Purchase Order #77 - Mad Mex City <1>');
-    assert.equal(subtotal, 12);
-    assert.equal(unpriced, 1);
-    assert.match(text, /Requested delivery: Tue,? 10 Nov 2026/);
-    assert.match(text, /Ordered by: Sam \(sam@example.com\)/);
-    assert.match(html, /\$12\.00/);
-    assert.match(html, /1 line\(s\) have no cost on file/);
-  });
-
-  test('can leave prices out', () => {
-    const { html, text } = renderPurchaseOrderEmail({ ...base, showPrices: false });
-    assert.doesNotMatch(html, /\$/);
-    assert.doesNotMatch(text, /\$/);
-  });
-
-  test('helpers', () => {
+describe('escapeHtml', () => {
+  test('escapes HTML special characters', () => {
     assert.equal(escapeHtml(`<a href="x">'&'</a>`), '&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;');
-    assert.equal(formatDateOnly('0001-01-01T00:00:00'), '');
-    assert.match(formatDateOnly('2026-11-10T00:00:00Z'), /^Tue,? 10 Nov 2026$/);
   });
 });
 

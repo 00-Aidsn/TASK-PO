@@ -517,11 +517,31 @@ export function createClerkSync({ config, task, settings, hub }) {
     timer = null;
   }
 
+  /** Supplier and store names from TASK (signed in as the sync clerk), for the admin panel's dropdowns. */
+  async function taskLists() {
+    const [suppliers, stores] = await Promise.all([
+      withTask((t) => task.getSuppliers(t)),
+      withTask((t) => task.getTerminalLocations(t)),
+    ]);
+    const byName = (a, b) => a.name.localeCompare(b.name, 'en-AU', { sensitivity: 'base' });
+    return {
+      suppliers: suppliers
+        .filter((s) => Number.isInteger(Number(s?.SupplierID)) && !s.Deleted && s.IsActive !== false)
+        .map((s) => ({ id: Number(s.SupplierID), name: String(s.SupplierName || `Supplier ${s.SupplierID}`).trim() }))
+        .sort(byName),
+      stores: stores
+        .filter((r) => Number.isInteger(Number(r?.LocationNo)) && r.IsActive !== false)
+        .map((r) => ({ locationNo: Number(r.LocationNo), name: String(r.LocationFriendlyName || r.LocationDescription || `Store ${r.LocationNo}`).trim() }))
+        .sort(byName),
+    };
+  }
+
   return {
     preview,
     run,
     start,
     stop,
+    taskLists,
     check: () => hub.check(),
     status: () => ({
       configured: true,

@@ -95,7 +95,59 @@ function toSupplier(s, fallbackId) {
     name: String(s.SupplierName || `Supplier ${s.SupplierID ?? fallbackId}`).trim(),
     email: String(s.EmailAddress || '').trim(),
     active: !s.Deleted && s.IsActive !== false,
+    // For the purchase order document
+    contact: String(s.Contact || '').trim(),
+    addressLines: [s.Address, s.Address2, s.Address3].map((a) => String(a || '').trim()).filter(Boolean),
+    state: String(s.State || '').trim(),
+    postCode: Number(s.PostCode) > 0 ? String(s.PostCode) : '',
   };
+}
+
+/**
+ * A store's name and delivery address from TASK (GET /terminals/locations), for the purchase order's
+ * "Venue" and "Ship To". Cached with the location list. Returns null if TASK doesn't say.
+ */
+export async function getStoreDetails(task, session, locationNo) {
+  const hit = session.storesCache;
+  let stores = hit && Date.now() - hit.at < LOCATION_CACHE_MS ? hit.value : null;
+  if (!stores) {
+    try {
+      const rows = await task.getTerminalLocations(session.accessToken);
+      stores = new Map(
+        rows
+          .filter((r) => r && Number.isInteger(Number(r.LocationNo)))
+          .map((r) => [
+            Number(r.LocationNo),
+            {
+              name: String(r.LocationFriendlyName || r.LocationDescription || '').trim(),
+              address: [r.StreetAddress, r.Suburb, r.State, r.PostCode]
+                .map((p) => String(p ?? '').trim())
+                .filter((p) => p && p !== '0')
+                .join(', '),
+            },
+          ]),
+      );
+    } catch (err) {
+      if (err instanceof TaskApiError && ['unauthorized', 'session_expired'].includes(err.kind)) throw err;
+      stores = new Map(); // no addresses available; the PO falls back to what TASK has on the order
+    }
+    session.storesCache = { at: Date.now(), value: stores };
+  }
+  return stores.get(Number(locationNo)) || null;
+}
+
+/** TASK unit-of-measure names by id (for the PO's UOM column). Empty if TASK doesn't provide them. */
+export async function getUomNames(task, session) {
+  try {
+    const dict = (await task.getSizeTypes(session.accessToken)) || {};
+    const entries = Array.isArray(dict)
+      ? dict.map((r) => [Number(r.Key ?? r.Id), String(r.Value ?? r.Name ?? '')])
+      : Object.entries(dict).map(([k, v]) => [Number(k), String(v ?? '')]);
+    return new Map(entries.filter(([k, v]) => Number.isFinite(k) && k > 0 && v.trim()));
+  } catch (err) {
+    if (err instanceof TaskApiError && ['unauthorized', 'session_expired'].includes(err.kind)) throw err;
+    return new Map();
+  }
 }
 
 /** Active suppliers, read live from GET /supplier. */
@@ -288,6 +340,7 @@ export async function getCatalogue(task, session, supplierId, location, options 
       caseDescription: String(c.CaseDescription || '').trim(),
       caseCost,
       unitCost,
+      uomSizeTypeId: Number(c.UomSizeTypeId) > 0 ? Number(c.UomSizeTypeId) : null,
       hiddenReason,
     };
     if (stock) {

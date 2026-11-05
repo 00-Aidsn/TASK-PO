@@ -34,7 +34,7 @@ function cookie(name, value, { secure, sameSite, path: cookiePath = '/', maxAge 
   return parts.join('; ');
 }
 
-export function adminRoutes({ config, settings, entra, clerkStore, sync = null }) {
+export function adminRoutes({ config, settings, entra, clerkStore, sync = null, accountNumbers = null }) {
   const router = Router();
   const { admin } = config;
   const secure = config.cookieSecure;
@@ -190,6 +190,41 @@ export function adminRoutes({ config, settings, entra, clerkStore, sync = null }
 
   router.get('/api/admin/audit', requireAdmin, (req, res) => {
     res.json({ entries: settings.readAudit(50) });
+  });
+
+  // ---------------------------------------------------------------- supplier account numbers (PO "Account No")
+  router.get('/api/admin/account-numbers', requireAdmin, async (req, res) => {
+    let lists = null;
+    let listsMessage = '';
+    if (sync) {
+      try {
+        lists = await sync.taskLists();
+      } catch (err) {
+        listsMessage = `Couldn't load suppliers and stores from TASK (${err.message}). Enter their TASK numbers instead.`;
+      }
+    } else {
+      listsMessage = 'To pick suppliers and stores from lists, set up the hub sync clerk (SYNC_TASK_LOGIN). Until then, enter their TASK numbers.';
+    }
+    res.json({ editable: Boolean(accountNumbers?.editable), entries: accountNumbers?.list() || [], lists, listsMessage });
+  });
+
+  // Add or change one; a blank account number removes it.
+  router.put('/api/admin/account-numbers', requireAdmin, (req, res) => {
+    res.json(accountNumbers.set(req.body || {}, req.admin));
+  });
+
+  router.get('/api/admin/account-numbers/export', requireAdmin, (req, res) => {
+    res
+      .set('Content-Disposition', 'attachment; filename="supplier-account-numbers.csv"')
+      .type('text/csv; charset=utf-8')
+      .send(accountNumbers.exportCsv());
+  });
+
+  router.post('/api/admin/account-numbers/import', requireAdmin, (req, res) => {
+    const csv = req.body?.csv;
+    if (typeof csv !== 'string' || !csv.trim()) return res.status(400).json({ error: 'Choose a CSV file to import.' });
+    if (csv.length > 190_000) return res.status(413).json({ error: 'That CSV file is too large.' });
+    res.json(accountNumbers.importCsv(csv, { replace: req.body.replace === true }, req.admin));
   });
 
   // ---------------------------------------------------------------- central hub -> TASK clerk sync

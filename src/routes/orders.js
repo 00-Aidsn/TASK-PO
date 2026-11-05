@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireClerk, requirePermission } from '../session.js';
 import { TaskApiError } from '../taskClient.js';
-import { findLocation, getCatalogue, getSupplierLive } from '../catalogue.js';
+import { findLocation, getCatalogue, getStoreDetails, getSupplierLive } from '../catalogue.js';
 import {
   CatalogueChangedError,
   ORDER_STATUS,
@@ -17,7 +17,7 @@ import {
 
 const IDEMPOTENCY_MS = 30 * 60_000;
 
-export function orderRoutes({ task, mailer, config }) {
+export function orderRoutes({ task, mailer, config, accountNumbers = null }) {
   const router = Router();
   router.use('/orders', requireClerk, requirePermission('canOrder', 'Your TASK account is not allowed to create purchase orders.'));
 
@@ -28,7 +28,7 @@ export function orderRoutes({ task, mailer, config }) {
       return { sent: false, reason: 'no_supplier_email', message: `${supplier.name} has no email address in TASK.` };
     }
     try {
-      return await emailPurchaseOrder({ task, session, mailer, config, poId, supplier, location, catalogue });
+      return await emailPurchaseOrder({ task, session, mailer, config, poId, supplier, location, catalogue, accountNumbers });
     } catch (err) {
       if (rethrowSessionErrors && isSessionError(err)) throw err;
       console.error(`[orders] email for PO #${poId} failed: ${err.message}`);
@@ -79,6 +79,8 @@ export function orderRoutes({ task, mailer, config }) {
     });
     if (changes.length) throw new CatalogueChangedError(changes);
     const pricedLines = priceLines(input.lines, catalogue);
+    // "Ship To" on the PO is the store's address in TASK (as when TASK creates a PO itself).
+    input.storeAddress = (await getStoreDetails(task, session, location.locationNo))?.address || '';
 
     session.sending = true;
     if (input.idempotencyKey) session.orders.set(input.idempotencyKey, { pending: true, at: Date.now() });
