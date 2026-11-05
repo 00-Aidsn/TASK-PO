@@ -157,5 +157,20 @@ export function createTaskClient({ baseUrl, apiKey, timeoutMs = 20000, pageSize 
     getPurchaseOrderItems: (token, id) => getAllPages(`/purchaseOrder/${encodeURIComponent(id)}/items`, { token }),
     addPurchaseOrderItem: (token, id, item) =>
       request('POST', `/purchaseOrder/${encodeURIComponent(id)}/items`, { token, body: item }),
+    updatePurchaseOrderItem: (token, id, itemId, item) =>
+      request('PUT', `/purchaseOrder/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`, { token, body: item }),
+    /** Purchase orders filtered by supplier, stock location and/or one OrderStatus. */
+    getPurchaseOrders: (token, { supplierId, stockLocationNo, orderStatus } = {}) =>
+      getAllPages('/purchaseOrder', { token, query: { supplierId, stockLocationNo, orderStatus } }),
+
+    // --- Supplier invoices (how TASK books delivered stock in) --------------
+    getInvoices: (token, { supplierId, locationNo, reference } = {}) =>
+      getAllPages('/invoice', { token, query: { supplierId, locationNo, reference } }),
+    createInvoice: (token, model) => request('POST', '/invoice', { token, body: model }),
+    getInvoice: (token, id) => request('GET', `/invoice/${encodeURIComponent(id)}`, { token }),
+    updateInvoice: (token, id, model) => request('PUT', `/invoice/${encodeURIComponent(id)}`, { token, body: model }),
+    deleteInvoice: (token, id) => request('DELETE', `/invoice/${encodeURIComponent(id)}`, { token }),
+    getInvoiceItems: (token, id) => getAllPages(`/invoice/${encodeURIComponent(id)}/items`, { token }),
+    addInvoiceItem: (token, id, item) => request('POST', `/invoice/${encodeURIComponent(id)}/items`, { token, body: item }),
   };
 }

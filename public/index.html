@@ -22,6 +22,11 @@
     </div>
   </header>
 
+  <nav class="tabs" id="tabs" aria-label="Sections" hidden>
+    <button type="button" class="tab" data-tab="order" aria-selected="true">New order</button>
+    <button type="button" class="tab" data-tab="receive" aria-selected="false">Receive delivery</button>
+  </nav>
+
   <main id="main">
     <!-- Sign in -->
     <section id="signin-view" class="view" hidden>
@@ -141,7 +146,137 @@
         </div>
       </div>
     </section>
+
+    <!-- Receiving: purchase orders waiting -->
+    <section id="receive-list-view" class="view" hidden>
+      <div class="card">
+        <h2 class="card-title">Receive a delivery</h2>
+        <p class="muted small">Choose the purchase order the delivery is for, check what arrived, and enter the supplier's invoice details. Receiving creates the supplier invoice in TASK, which books the stock in.</p>
+        <label class="field narrow">
+          <span>Location</span>
+          <select id="rcv-location"></select>
+        </label>
+        <div class="error" id="rcv-list-error" role="alert" hidden></div>
+      </div>
+      <div class="card" id="rcv-orders-card" hidden>
+        <div class="card-head">
+          <h2 class="card-title">Purchase orders waiting to be received</h2>
+          <button type="button" class="btn" id="rcv-refresh">Refresh from TASK</button>
+        </div>
+        <p class="muted small" id="rcv-orders-status"></p>
+        <div class="table-wrap">
+          <table class="orders">
+            <thead>
+              <tr>
+                <th scope="col">PO</th>
+                <th scope="col">Supplier</th>
+                <th scope="col">Expected</th>
+                <th scope="col">Reference</th>
+                <th scope="col">Status</th>
+                <th scope="col"><span class="visually-hidden">Action</span></th>
+              </tr>
+            </thead>
+            <tbody id="rcv-orders-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card" id="rcv-nopo-card" hidden>
+        <h2 class="card-title">Delivery without a purchase order</h2>
+        <div class="template-row">
+          <label class="field grow">
+            <span>Supplier</span>
+            <select id="rcv-nopo-supplier"></select>
+          </label>
+          <button type="button" class="btn" id="rcv-nopo-start">Start receiving</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Receiving: the delivery -->
+    <section id="receive-form-view" class="view" hidden>
+      <div class="notice warn changes" id="rcv-notice" role="alert" hidden></div>
+      <div class="card">
+        <div class="card-head">
+          <h2 class="card-title" id="rcv-title"></h2>
+          <button type="button" class="btn btn-ghost" id="rcv-back">Back to list</button>
+        </div>
+        <dl class="summary" id="rcv-po-summary"></dl>
+        <div class="grid-2">
+          <label class="field">
+            <span>Supplier invoice or docket number</span>
+            <input id="rcv-invoice-number" maxlength="50" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Invoice date</span>
+            <input type="date" id="rcv-invoice-date">
+          </label>
+        </div>
+        <label class="field">
+          <span>Comments (optional)</span>
+          <textarea id="rcv-comments" rows="2" maxlength="1000"></textarea>
+        </label>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2 class="card-title">What arrived</h2>
+          <div class="filters" id="rcv-fill-buttons">
+            <button type="button" class="btn" id="rcv-fill-all">Fill in as ordered</button>
+            <button type="button" class="btn" id="rcv-clear-all">Clear quantities</button>
+          </div>
+        </div>
+        <p class="muted small" id="rcv-lines-hint"></p>
+        <div class="table-wrap">
+          <table class="products receive">
+            <thead>
+              <tr>
+                <th scope="col">Code</th>
+                <th scope="col">Product</th>
+                <th scope="col">Pack</th>
+                <th scope="col" class="num">To receive</th>
+                <th scope="col" class="num">Cases</th>
+                <th scope="col" class="num">Units</th>
+                <th scope="col" class="num">Case cost ex GST</th>
+                <th scope="col" class="num">Line ex GST</th>
+                <th scope="col"><span class="visually-hidden">Remove</span></th>
+              </tr>
+            </thead>
+            <tbody id="rcv-lines-body"></tbody>
+          </table>
+        </div>
+        <div class="add-item">
+          <label class="field">
+            <span id="rcv-add-label">Add an item that was delivered but not ordered</span>
+            <input type="search" id="rcv-add-search" placeholder="Search this supplier's products" autocomplete="off">
+          </label>
+          <ul class="add-results" id="rcv-add-results"></ul>
+        </div>
+        <label class="check close-short" id="rcv-close-short-row" hidden>
+          <input type="checkbox" id="rcv-close-short"> The missing items won't be delivered: close the purchase order
+        </label>
+      </div>
+      <div class="spacer"></div>
+    </section>
+
+    <!-- Receiving: done -->
+    <section id="receive-result-view" class="view" hidden>
+      <div class="card result-card" id="rcv-result-card">
+        <h1 id="rcv-result-title"></h1>
+        <dl class="summary" id="rcv-result-summary"></dl>
+        <div id="rcv-result-notes"></div>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="rcv-another">Receive another delivery</button>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <footer class="order-bar" id="receive-bar" hidden>
+    <div class="order-total">
+      <span id="rcv-bar-lines">0 lines</span>
+      <strong id="rcv-bar-total">$0.00</strong><span class="muted small"> ex GST</span>
+    </div>
+    <button type="button" class="btn btn-primary" id="rcv-review" disabled>Review &amp; receive</button>
+  </footer>
 
   <footer class="order-bar" id="order-bar" hidden>
     <div class="order-total">
@@ -166,6 +301,24 @@
       <div class="actions">
         <button type="submit" class="btn" value="cancel" id="review-cancel">Back to order</button>
         <button type="button" class="btn btn-primary" id="send">Send purchase order</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="rcv-dialog" aria-labelledby="rcv-review-title">
+    <form method="dialog" class="dialog-body">
+      <h2 id="rcv-review-title">Review delivery</h2>
+      <dl class="summary" id="rcv-review-summary"></dl>
+      <div class="table-wrap">
+        <table class="review-lines">
+          <thead><tr><th>Product</th><th class="num">To receive</th><th class="num">Received</th><th class="num">Case cost</th></tr></thead>
+          <tbody id="rcv-review-lines"></tbody>
+        </table>
+      </div>
+      <div class="notice" id="rcv-review-notes"></div>
+      <div class="error" id="rcv-review-error" role="alert" hidden></div>
+      <div class="actions">
+        <button type="submit" class="btn" value="cancel" id="rcv-review-cancel">Back to delivery</button>
+        <button type="button" class="btn btn-primary" id="rcv-send">Receive delivery</button>
       </div>
     </form>
   </dialog>

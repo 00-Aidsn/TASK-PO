@@ -32,8 +32,10 @@ mockApp.listen(mockPort, '127.0.0.1', () => {
   app.listen(appPort, () => {
     console.log(`Demo running on http://localhost:${appPort} (fake TASK API on :${mockPort})`);
     console.log(`Sign in with login type "Email" and password "${MOCK_PASSWORD}":`);
-    console.log('  manager@example.com  - can create and approve (POs are emailed)');
-    console.log('  crew@example.com     - can create only (POs saved as Awaiting approval)');
-    console.log('  viewer@example.com   - no PO permission (sign-in refused)');
+    console.log('  manager@example.com  - orders (approved and emailed) and receives (invoices completed)');
+    console.log('  crew@example.com     - orders (Awaiting approval) and receives (invoices left for a manager)');
+    console.log('  receiver@example.com - receive only');
+    console.log('  buyer@example.com    - order only');
+    console.log('  viewer@example.com   - no PO or invoice permission (sign-in refused)');
   });
 });

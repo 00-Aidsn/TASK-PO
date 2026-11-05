@@ -29,7 +29,15 @@ function createLoginLimiter(now = () => Date.now()) {
 }
 
 export function publicClerk(clerk) {
-  return { id: clerk.id, name: clerk.name, email: clerk.email, canApprove: clerk.canApprove };
+  return {
+    id: clerk.id,
+    name: clerk.name,
+    email: clerk.email,
+    canOrder: clerk.canOrder,
+    canApprove: clerk.canApprove,
+    canReceive: clerk.canReceive,
+    canCommitInvoices: clerk.canCommitInvoices,
+  };
 }
 
 export function authRoutes({ task, config }) {
@@ -83,9 +91,11 @@ export function authRoutes({ task, config }) {
       limiter.fail(key);
       return res.status(401).json({ error: 'Sign-in failed. TASK did not confirm your clerk account.' });
     }
-    if (!me.CanCreatePurchaseOrders) {
+    // Ordering needs "create purchase orders"; receiving needs "create invoices" (TASK books deliveries as invoices).
+    if (!me.CanCreatePurchaseOrders && !me.CanCreateInvoices) {
       return res.status(403).json({
-        error: 'Your TASK account is not allowed to create purchase orders. Ask your manager to update your TASK permissions.',
+        error:
+          'Your TASK account is not allowed to create purchase orders or receive stock. Ask your manager to update your TASK permissions.',
       });
     }
     limiter.reset(key);
@@ -95,7 +105,10 @@ export function authRoutes({ task, config }) {
       name: me.AuthNiceName || login,
       email: me.Email || '',
       locations: Array.isArray(me.Locations) ? me.Locations : [],
-      canApprove: Boolean(me.CanApprovePurchaseOrders),
+      canOrder: Boolean(me.CanCreatePurchaseOrders),
+      canApprove: Boolean(me.CanCreatePurchaseOrders && me.CanApprovePurchaseOrders),
+      canReceive: Boolean(me.CanCreateInvoices),
+      canCommitInvoices: Boolean(me.CanCreateInvoices && me.CanCommitInvoices),
     };
     res.startSession({ accessToken, clerk });
     res.json({ clerk: publicClerk(clerk) });

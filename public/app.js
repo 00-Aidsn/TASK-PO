@@ -25,6 +25,7 @@
     idempotencyKey: null,
     lastResult: null,
     sending: false,
+    tab: null, // 'order' | 'receive'
   };
 
   // ---------------------------------------------------------------- helpers
@@ -147,19 +148,32 @@
   }
 
   // ---------------------------------------------------------------- views
+  const VIEWS = {
+    signin: 'signin-view',
+    builder: 'builder-view',
+    result: 'result-view',
+    'receive-list': 'receive-list-view',
+    'receive-form': 'receive-form-view',
+    'receive-result': 'receive-result-view',
+  };
+
   function showView(name) {
-    show($('signin-view'), name === 'signin');
-    show($('builder-view'), name === 'builder');
-    show($('result-view'), name === 'result');
+    for (const [view, id] of Object.entries(VIEWS)) show($(id), view === name);
     show($('order-bar'), name === 'builder');
+    show($('receive-bar'), name === 'receive-form');
+    // Tabs only when the clerk can both order and receive.
+    const both = Boolean(state.clerk && state.clerk.canOrder && state.clerk.canReceive);
+    show($('tabs'), name !== 'signin' && both);
+    for (const tab of document.querySelectorAll('#tabs [data-tab]')) {
+      tab.setAttribute('aria-selected', String(tab.dataset.tab === state.tab));
+    }
     if (name === 'signin') setTimeout(() => ($('login').value ? $('password') : $('login')).focus(), 0);
   }
 
   function onSignedOut(message) {
     state.clerk = null;
     show($('who'), false);
-    const dialog = $('review-dialog');
-    if (dialog.open) dialog.close();
+    for (const id of ['review-dialog', 'rcv-dialog']) if ($(id).open) $(id).close();
     setMessage($('signin-notice'), message);
     setMessage($('signin-error'), '');
     $('password').value = '';
@@ -193,13 +207,12 @@
     const sameClerk = state.draftOwner === clerk.id && state.locations.length > 0;
     if (!sameClerk) {
       resetDraft();
+      resetReceiving();
       state.draftOwner = clerk.id;
+      state.tab = null;
     }
-    if (state.lastResult && sameClerk) {
-      showView('result');
-      return;
-    }
-    showView('builder');
+    if (!canUseTab(state.tab)) state.tab = clerk.canOrder ? 'order' : 'receive';
+    showTab(state.tab);
     if (!sameClerk) await loadReferenceData();
   }
 
@@ -264,7 +277,9 @@
       // signed out locally regardless
     }
     resetDraft();
+    resetReceiving();
     state.draftOwner = null;
+    state.tab = null;
     onSignedOut('You have signed out.');
   });
 
@@ -297,6 +312,7 @@
     }
     renderSupplierEmail();
     renderBuilder();
+    initReceiveSelectors();
   }
 
   function currentSupplier() {
@@ -832,6 +848,693 @@
     showView('builder');
     renderBuilder();
     window.scrollTo(0, 0);
+  });
+
+  // ================================================================ receiving
+  // Receiving creates the supplier invoice in TASK (which books stock in) and marks the PO received.
+  const rcv = {
+    locationNo: null,
+    orders: [],
+    ordersCheckedAt: null,
+    loadSeq: 0,
+    form: null,
+    nextKey: 1,
+    idempotencyKey: null,
+    sending: false,
+    lastResult: null,
+  };
+
+  function resetReceiving() {
+    rcv.locationNo = null;
+    rcv.orders = [];
+    rcv.ordersCheckedAt = null;
+    rcv.form = null;
+    rcv.lastResult = null;
+    rcv.idempotencyKey = null;
+    $('rcv-orders-body').replaceChildren();
+    show($('rcv-orders-card'), false);
+    show($('rcv-nopo-card'), false);
+    setMessage($('rcv-list-error'), '');
+  }
+
+  function qtyLabel(cases, units) {
+    const parts = [];
+    if (cases > 0) parts.push(`${fmtQty(cases)} ${cases === 1 ? 'case' : 'cases'}`);
+    if (units > 0) parts.push(`${fmtQty(units)} ${units === 1 ? 'unit' : 'units'}`);
+    return parts.join(' + ') || 'none';
+  }
+
+  /** Splits a number of units into whole cases plus units. */
+  function splitUnits(totalUnits, caseQty) {
+    const cases = Math.floor(totalUnits / caseQty + 1e-9);
+    return { cases, units: Math.round((totalUnits - cases * caseQty) * 1000) / 1000 };
+  }
+
+  function showRcvNotice(title, items = []) {
+    const node = $('rcv-notice');
+    if (!title) {
+      node.replaceChildren();
+      show(node, false);
+      return;
+    }
+    node.replaceChildren(el('strong', { text: title }), items.length ? el('ul', {}, items.map((t) => el('li', { text: t }))) : null);
+    show(node, true);
+    node.scrollIntoView({ block: 'nearest' });
+  }
+
+  function initReceiveSelectors() {
+    fillSelect(
+      $('rcv-location'),
+      state.locations.map((l) => ({ value: l.locationNo, label: l.name })),
+      state.locations.length ? 'Choose a location…' : 'No locations available',
+    );
+    fillSelect($('rcv-nopo-supplier'), state.suppliers.map((s) => ({ value: s.id, label: s.name })), 'Choose a supplier…');
+    if (!rcv.locationNo && state.locations.length === 1) rcv.locationNo = state.locations[0].locationNo;
+    if (rcv.locationNo) {
+      $('rcv-location').value = String(rcv.locationNo);
+      if (state.tab === 'receive' && !rcv.form && !rcv.lastResult) loadOpenOrders();
+    }
+  }
+
+  $('rcv-location').addEventListener('change', (e) => {
+    rcv.locationNo = e.target.value ? Number(e.target.value) : null;
+    loadOpenOrders();
+  });
+
+  async function loadOpenOrders() {
+    const seq = ++rcv.loadSeq;
+    setMessage($('rcv-list-error'), '');
+    show($('rcv-orders-card'), Boolean(rcv.locationNo));
+    show($('rcv-nopo-card'), Boolean(rcv.locationNo));
+    $('rcv-orders-body').replaceChildren();
+    if (!rcv.locationNo) return;
+    $('rcv-orders-status').textContent = 'Checking TASK for purchase orders…';
+    $('rcv-refresh').disabled = true;
+    try {
+      const { orders } = await api('GET', `/receiving/orders?locationNo=${rcv.locationNo}`);
+      if (seq !== rcv.loadSeq) return;
+      rcv.orders = orders;
+      rcv.ordersCheckedAt = new Date().toISOString();
+      renderOpenOrders();
+    } catch (err) {
+      if (seq !== rcv.loadSeq) return;
+      $('rcv-orders-status').textContent = '';
+      if (err.status !== 401) setMessage($('rcv-list-error'), err.message);
+    } finally {
+      if (seq === rcv.loadSeq) $('rcv-refresh').disabled = false;
+    }
+  }
+
+  function renderOpenOrders() {
+    const n = rcv.orders.length;
+    $('rcv-orders-status').textContent =
+      (n
+        ? `${n} purchase ${n === 1 ? 'order is' : 'orders are'} waiting to be received.`
+        : 'No approved purchase orders are waiting to be received at this location.') +
+      ` Checked live with TASK at ${formatTime(rcv.ordersCheckedAt)}.`;
+    $('rcv-orders-body').replaceChildren(
+      ...rcv.orders.map((o) =>
+        el(
+          'tr',
+          {},
+          el('td', { 'data-label': 'PO', text: `#${o.poId}` }),
+          el('td', { 'data-label': 'Supplier', text: o.supplierName }),
+          el('td', { 'data-label': 'Expected', text: formatDate(o.deliveryDate) || '—' }),
+          el('td', { 'data-label': 'Reference', text: o.customerPo || '—' }),
+          el('td', { 'data-label': 'Status', text: o.statusLabel }),
+          el(
+            'td',
+            { className: 'num action' },
+            el('button', {
+              type: 'button',
+              className: 'btn btn-primary btn-small',
+              text: 'Receive',
+              'aria-label': `Receive PO #${o.poId} from ${o.supplierName}`,
+              dataset: { po: String(o.poId) },
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  $('rcv-refresh').addEventListener('click', loadOpenOrders);
+  $('rcv-orders-body').addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-po]');
+    if (button) openPoReceipt(Number(button.dataset.po), button);
+  });
+  $('rcv-nopo-start').addEventListener('click', (e) => {
+    const supplierId = Number($('rcv-nopo-supplier').value);
+    if (!supplierId) {
+      setMessage($('rcv-list-error'), 'Choose the supplier the delivery came from.');
+      return;
+    }
+    openSupplierReceipt(supplierId, e.currentTarget);
+  });
+
+  /** The supplier's products, for adding items that weren't ordered. Never blocks receiving. */
+  async function loadReceivableProducts(supplierId, locationNo) {
+    try {
+      const { products } = await api('GET', `/receiving/products?supplierId=${supplierId}&locationNo=${locationNo}`);
+      return { products, productsError: '' };
+    } catch (err) {
+      if (err.status === 401) throw err;
+      return { products: [], productsError: err.message };
+    }
+  }
+
+  async function withBusy(button, fn) {
+    const label = button ? button.textContent : '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Loading…';
+    }
+    try {
+      await fn();
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    }
+  }
+
+  async function openPoReceipt(poId, button) {
+    setMessage($('rcv-list-error'), '');
+    await withBusy(button, async () => {
+      try {
+        const detail = await api('GET', `/receiving/orders/${poId}`);
+        const extra = await loadReceivableProducts(detail.po.supplierId, detail.po.locationNo);
+        startReceipt({
+          po: detail.po,
+          supplierId: detail.po.supplierId,
+          supplierName: detail.po.supplierName,
+          locationNo: detail.po.locationNo,
+          locationName: detail.po.locationName,
+          ...extra,
+          lines: detail.lines.map((l) => ({
+            key: rcv.nextKey++,
+            purchaseItemId: l.purchaseItemId,
+            productSupplierId: l.productSupplierId,
+            code: l.code,
+            name: l.name,
+            pack: l.pack,
+            caseQty: l.caseQty,
+            ordered: l,
+            refCaseCost: l.poCaseCost,
+            cases: l.outstandingCases,
+            units: l.outstandingUnits,
+            caseCost: l.poCaseCost ?? '',
+            unordered: false,
+          })),
+        });
+      } catch (err) {
+        if (err.status === 401) return;
+        setMessage($('rcv-list-error'), err.message);
+        if (err.status === 409) loadOpenOrders();
+      }
+    });
+  }
+
+  async function openSupplierReceipt(supplierId, button) {
+    setMessage($('rcv-list-error'), '');
+    const supplier = state.suppliers.find((s) => s.id === supplierId);
+    const location = state.locations.find((l) => l.locationNo === rcv.locationNo);
+    await withBusy(button, async () => {
+      try {
+        const extra = await loadReceivableProducts(supplierId, rcv.locationNo);
+        if (extra.productsError) {
+          setMessage($('rcv-list-error'), extra.productsError);
+          return;
+        }
+        startReceipt({
+          po: null,
+          supplierId,
+          supplierName: supplier ? supplier.name : `Supplier #${supplierId}`,
+          locationNo: rcv.locationNo,
+          locationName: location ? location.name : '',
+          ...extra,
+          lines: [],
+        });
+      } catch (err) {
+        if (err.status !== 401) setMessage($('rcv-list-error'), err.message);
+      }
+    });
+  }
+
+  function startReceipt(form) {
+    rcv.form = form;
+    rcv.lastResult = null;
+    $('rcv-invoice-number').value = '';
+    $('rcv-invoice-date').value = todayLocal();
+    $('rcv-invoice-date').max = todayLocal();
+    $('rcv-comments').value = '';
+    $('rcv-close-short').checked = false;
+    $('rcv-add-search').value = '';
+    showRcvNotice('');
+    renderReceiptForm();
+    showView('receive-form');
+    window.scrollTo(0, 0);
+    $('rcv-invoice-number').focus();
+  }
+
+  // ---- receipt maths (cost is per case, ex GST; units are priced at case cost / case qty)
+  function parseCost(value) {
+    if (value === '' || value === null || value === undefined) return null;
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  const qtyOk = (v) => v === '' || v === null || v === undefined || (Number.isFinite(Number(v)) && Number(v) >= 0);
+  const lineUnits = (l) => (Number(l.cases) || 0) * l.caseQty + (Number(l.units) || 0);
+  function lineAmount(l) {
+    const cost = parseCost(l.caseCost);
+    if (cost === null) return null;
+    return Math.round(((Number(l.cases) || 0) * cost + (Number(l.units) || 0) * (cost / l.caseQty)) * 100) / 100;
+  }
+  function lineState(l) {
+    const got = lineUnits(l);
+    const cost = parseCost(l.caseCost);
+    return {
+      short: Boolean(l.ordered) && got + 1e-9 < l.ordered.outstandingTotal,
+      over: Boolean(l.ordered) && got > l.ordered.outstandingTotal + 1e-9,
+      costChanged: l.refCaseCost !== null && l.refCaseCost !== undefined && cost !== null && Math.abs(cost - l.refCaseCost) >= 0.005,
+      shortUnits: l.ordered ? Math.max(0, l.ordered.outstandingTotal - got) : 0,
+    };
+  }
+
+  function renderReceiptForm() {
+    const f = rcv.form;
+    $('rcv-title').textContent = f.po ? `Receive PO #${f.po.poId}: ${f.supplierName}` : `Receive delivery: ${f.supplierName} (no PO)`;
+    summaryRows(
+      $('rcv-po-summary'),
+      f.po
+        ? [
+            ['Location', f.locationName],
+            ['Status', f.po.statusLabel],
+            ['Expected', formatDate(f.po.deliveryDate)],
+            ['Our reference', f.po.customerPo],
+          ]
+        : [['Location', f.locationName]],
+    );
+    $('rcv-lines-hint').textContent = f.po
+      ? 'Quantities start as what is still to come on the PO. Check them against the delivery and change anything that is short or different. Change the case cost if the invoice price differs.'
+      : "Search below for each product on the supplier's delivery docket and enter what arrived and the invoice case cost.";
+    show($('rcv-fill-buttons'), Boolean(f.po));
+    $('rcv-add-label').textContent = f.po ? 'Add an item that was delivered but not ordered' : 'Add the products that were delivered';
+    renderReceiptLines();
+    renderAddResults();
+  }
+
+  function renderReceiptLines() {
+    const f = rcv.form;
+    const body = $('rcv-lines-body');
+    body.replaceChildren(...f.lines.map(receiptRow));
+    if (!f.lines.length) {
+      body.append(el('tr', {}, el('td', { colspan: '9', className: 'muted', text: 'No items yet. Search below to add what was delivered.' })));
+    }
+    updateReceiptTotals();
+  }
+
+  function receiptRow(l) {
+    const input = (field, value, label) =>
+      el('input', {
+        type: 'number',
+        min: '0',
+        step: field === 'caseCost' ? '0.01' : 'any',
+        inputmode: 'decimal',
+        className: field === 'caseCost' ? 'qty cost' : 'qty',
+        value: value === null || value === undefined || value === '' ? '' : String(value),
+        'aria-label': `${label} for ${l.name}`,
+        dataset: { key: String(l.key), field },
+      });
+    const toReceive = l.ordered
+      ? [
+          el('span', { text: qtyLabel(l.ordered.outstandingCases, l.ordered.outstandingUnits) }),
+          l.ordered.receivedTotal > 0
+            ? el('span', { className: 'stock-levels', text: `of ${qtyLabel(l.ordered.orderedCases, l.ordered.orderedUnits)} ordered` })
+            : null,
+        ]
+      : el('span', { className: 'muted', text: rcv.form.po ? 'Not ordered' : '—' });
+    const row = el(
+      'tr',
+      { dataset: { key: String(l.key) } },
+      el('td', { className: 'code', 'data-label': 'Code', text: l.code || '—' }),
+      el('td', { className: 'name', 'data-label': 'Product' }, l.name, el('span', { className: 'flags' })),
+      el('td', { className: 'pack', 'data-label': 'Pack', text: l.pack || '—' }),
+      el('td', { className: 'num', 'data-label': 'To receive' }, toReceive),
+      el('td', { className: 'num', 'data-label': 'Cases' }, input('cases', l.cases, 'Cases received')),
+      el('td', { className: 'num', 'data-label': 'Units' }, input('units', l.units, 'Units received')),
+      el('td', { className: 'num', 'data-label': 'Case cost ex GST' }, input('caseCost', l.caseCost, 'Case cost ex GST'), el('span', { className: 'cost-note' })),
+      el('td', { className: 'num line-total', 'data-label': 'Line ex GST' }),
+      el(
+        'td',
+        { className: 'num remove' },
+        l.unordered
+          ? el('button', { type: 'button', className: 'btn btn-remove', text: 'Remove', 'aria-label': `Remove ${l.name}`, dataset: { remove: String(l.key) } })
+          : null,
+      ),
+    );
+    updateReceiptRow(row, l);
+    return row;
+  }
+
+  function updateReceiptRow(row, l) {
+    const st = lineState(l);
+    row.classList.toggle('short', st.short);
+    row.classList.toggle('over', st.over);
+    const flags = row.querySelector('.flags');
+    const badges = [];
+    if (st.short) badges.push(el('span', { className: 'badge badge-warn', text: 'Short' }));
+    if (st.over) badges.push(el('span', { className: 'badge badge-warn', text: 'More than ordered' }));
+    if (l.unordered && rcv.form.po) badges.push(el('span', { className: 'badge badge-info', text: 'Not on PO' }));
+    flags.replaceChildren(...badges);
+    const costInput = row.querySelector('input.cost');
+    costInput.classList.toggle('changed', st.costChanged);
+    row.querySelector('.cost-note').textContent = st.costChanged ? `${l.unordered ? 'On file' : 'PO'} ${fmtMoney(l.refCaseCost)}` : '';
+    const amount = lineAmount(l);
+    row.querySelector('.line-total').textContent = lineUnits(l) > 0 ? fmtMoney(amount) : '';
+  }
+
+  function updateReceiptTotals() {
+    const f = rcv.form;
+    if (!f) return;
+    const received = f.lines.filter((l) => lineUnits(l) > 0);
+    const total = received.reduce((sum, l) => sum + (lineAmount(l) || 0), 0);
+    $('rcv-bar-lines').textContent = `${received.length} ${received.length === 1 ? 'line' : 'lines'} received`;
+    $('rcv-bar-total').textContent = fmtMoney(total);
+    $('rcv-review').disabled = received.length === 0;
+    const anyShort = Boolean(f.po) && f.lines.some((l) => lineState(l).short);
+    show($('rcv-close-short-row'), anyShort);
+    if (!anyShort) $('rcv-close-short').checked = false;
+  }
+
+  $('rcv-lines-body').addEventListener('input', (e) => {
+    const input = e.target;
+    if (!input.matches('input[data-key]') || !rcv.form) return;
+    const line = rcv.form.lines.find((l) => l.key === Number(input.dataset.key));
+    if (!line) return;
+    const field = input.dataset.field;
+    const ok = field === 'caseCost' ? input.value === '' || parseCost(input.value) !== null : qtyOk(input.value);
+    input.classList.toggle('invalid', !ok);
+    line[field] = field === 'caseCost' ? input.value : ok ? Number(input.value) || 0 : NaN;
+    updateReceiptRow(input.closest('tr'), line);
+    updateReceiptTotals();
+  });
+
+  $('rcv-lines-body').addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-remove]');
+    if (!button) return;
+    rcv.form.lines = rcv.form.lines.filter((l) => l.key !== Number(button.dataset.remove));
+    renderReceiptLines();
+    renderAddResults();
+  });
+
+  $('rcv-fill-all').addEventListener('click', () => {
+    for (const l of rcv.form.lines) {
+      if (!l.ordered) continue;
+      l.cases = l.ordered.outstandingCases;
+      l.units = l.ordered.outstandingUnits;
+    }
+    renderReceiptLines();
+  });
+  $('rcv-clear-all').addEventListener('click', () => {
+    for (const l of rcv.form.lines) {
+      l.cases = 0;
+      l.units = 0;
+    }
+    renderReceiptLines();
+  });
+
+  function renderAddResults() {
+    const f = rcv.form;
+    const list = $('rcv-add-results');
+    const term = $('rcv-add-search').value.trim().toLowerCase();
+    if (!f || !term) {
+      list.replaceChildren();
+      return;
+    }
+    if (f.productsError) {
+      list.replaceChildren(el('li', { className: 'muted small', text: `Items can't be added: ${f.productsError}` }));
+      return;
+    }
+    const onReceipt = new Set(f.lines.map((l) => l.productSupplierId));
+    const matches = f.products
+      .filter((p) => !onReceipt.has(p.productSupplierId))
+      .filter((p) => p.name.toLowerCase().includes(term) || p.code.toLowerCase().includes(term))
+      .slice(0, 8);
+    list.replaceChildren(
+      ...(matches.length
+        ? matches.map((p) =>
+            el(
+              'li',
+              {},
+              el(
+                'button',
+                { type: 'button', className: 'btn add-btn', dataset: { psid: String(p.productSupplierId) } },
+                el('strong', { text: p.name }),
+                el('span', { className: 'muted small', text: [p.code, packLabel(p), p.caseCost ? fmtMoney(p.caseCost) : 'no cost on file'].filter(Boolean).join(' · ') }),
+              ),
+            ),
+          )
+        : [el('li', { className: 'muted small', text: 'No matching products for this supplier.' })]),
+    );
+  }
+
+  $('rcv-add-search').addEventListener('input', renderAddResults);
+  $('rcv-add-results').addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-psid]');
+    if (!button || !rcv.form) return;
+    const p = rcv.form.products.find((x) => x.productSupplierId === Number(button.dataset.psid));
+    if (!p) return;
+    const key = rcv.nextKey++;
+    rcv.form.lines.push({
+      key,
+      purchaseItemId: null,
+      productSupplierId: p.productSupplierId,
+      code: p.code,
+      name: p.name,
+      pack: packLabel(p),
+      caseQty: p.caseQty,
+      ordered: null,
+      refCaseCost: p.caseCost,
+      cases: 0,
+      units: 0,
+      caseCost: p.caseCost ?? '',
+      unordered: true,
+    });
+    $('rcv-add-search').value = '';
+    renderAddResults();
+    renderReceiptLines();
+    const input = document.querySelector(`#rcv-lines-body input[data-key="${key}"][data-field="cases"]`);
+    if (input) input.focus();
+  });
+
+  $('rcv-back').addEventListener('click', () => {
+    if (!window.confirm('Leave this delivery without receiving it? What you have entered will be lost.')) return;
+    rcv.form = null;
+    showView('receive-list');
+    loadOpenOrders();
+  });
+
+  // ---- review & receive
+  $('rcv-review').addEventListener('click', () => {
+    const f = rcv.form;
+    if (!f) return;
+    const problems = [];
+    const invoiceNumber = $('rcv-invoice-number').value.trim();
+    const invoiceDate = $('rcv-invoice-date').value;
+    if (!invoiceNumber) problems.push("Enter the supplier's invoice or docket number.");
+    if (!invoiceDate) problems.push('Enter the invoice date.');
+    else if (invoiceDate > todayLocal()) problems.push('The invoice date cannot be in the future.');
+    for (const l of f.lines) {
+      if (!qtyOk(l.cases) || !qtyOk(l.units) || Number.isNaN(l.cases) || Number.isNaN(l.units)) {
+        problems.push(`Check the quantities for ${l.name}.`);
+      } else if (lineUnits(l) > 0 && parseCost(l.caseCost) === null) {
+        problems.push(`Enter the invoice case cost for ${l.name}.`);
+      }
+    }
+    const received = f.lines.filter((l) => lineUnits(l) > 0);
+    if (!received.length) problems.push('Enter the quantity received for at least one item.');
+    if (problems.length) {
+      showRcvNotice('Please fix these before receiving:', problems);
+      return;
+    }
+    showRcvNotice('');
+
+    const total = received.reduce((sum, l) => sum + (lineAmount(l) || 0), 0);
+    summaryRows($('rcv-review-summary'), [
+      ['Supplier', f.supplierName],
+      ['Location', f.locationName],
+      ['Purchase order', f.po ? `#${f.po.poId}` : 'No PO'],
+      ['Supplier invoice', invoiceNumber],
+      ['Invoice date', formatDate(invoiceDate)],
+      ['Received by', state.clerk.name],
+      ['Total', `${fmtMoney(total)} ex GST`],
+    ]);
+    $('rcv-review-lines').replaceChildren(
+      ...f.lines.map((l) => {
+        const st = lineState(l);
+        return el(
+          'tr',
+          { className: st.short ? 'short' : '' },
+          el('td', {}, l.name, l.unordered && f.po ? el('span', { className: 'badge badge-info', text: 'Not on PO' }) : null),
+          el('td', { className: 'num', text: l.ordered ? qtyLabel(l.ordered.outstandingCases, l.ordered.outstandingUnits) : '—' }),
+          el('td', { className: 'num', text: qtyLabel(Number(l.cases) || 0, Number(l.units) || 0) }),
+          el(
+            'td',
+            { className: 'num' },
+            fmtMoney(parseCost(l.caseCost)),
+            st.costChanged ? el('span', { className: 'cost-note', text: `was ${fmtMoney(l.refCaseCost)}` }) : null,
+          ),
+        );
+      }),
+    );
+
+    const notes = [];
+    const shorts = f.lines.filter((l) => lineState(l).short);
+    for (const l of shorts) {
+      const s = splitUnits(lineState(l).shortUnits, l.caseQty);
+      notes.push(`Short: ${l.name}, ${qtyLabel(s.cases, s.units)} not delivered.`);
+    }
+    if (f.po) {
+      notes.push(
+        shorts.length
+          ? $('rcv-close-short').checked
+            ? `PO #${f.po.poId} will be closed. The missing items won't be expected.`
+            : `PO #${f.po.poId} will stay open as "Partially received" for the missing items.`
+          : `PO #${f.po.poId} will be marked "Stock received".`,
+      );
+    }
+    for (const l of f.lines.filter((x) => lineState(x).over)) notes.push(`More than ordered: ${l.name}.`);
+    for (const l of f.lines.filter((x) => lineState(x).costChanged && lineUnits(x) > 0)) {
+      notes.push(`${l.name}: invoice case cost ${fmtMoney(parseCost(l.caseCost))} instead of ${fmtMoney(l.refCaseCost)}.`);
+    }
+    notes.push(
+      state.clerk.canCommitInvoices
+        ? 'The supplier invoice will be completed in TASK and the stock booked in straight away.'
+        : 'The supplier invoice will be saved in TASK for a manager to complete. The stock is booked in when they do.',
+    );
+    $('rcv-review-notes').replaceChildren(el('ul', {}, notes.map((t) => el('li', { text: t }))));
+    setMessage($('rcv-review-error'), '');
+    rcv.idempotencyKey = randomKey();
+    $('rcv-send').disabled = false;
+    $('rcv-send').textContent = 'Receive delivery';
+    $('rcv-dialog').showModal();
+  });
+
+  $('rcv-send').addEventListener('click', async () => {
+    const f = rcv.form;
+    if (rcv.sending || !f) return;
+    const body = {
+      purchaseOrderId: f.po ? f.po.poId : null,
+      supplierId: f.supplierId,
+      locationNo: f.locationNo,
+      invoiceNumber: $('rcv-invoice-number').value.trim(),
+      invoiceDate: $('rcv-invoice-date').value,
+      comments: $('rcv-comments').value.trim() || undefined,
+      closeShort: Boolean(f.po) && $('rcv-close-short').checked,
+      lines: f.lines
+        .filter((l) => l.purchaseItemId || lineUnits(l) > 0)
+        .map((l) => ({
+          purchaseItemId: l.purchaseItemId || undefined,
+          productSupplierId: l.productSupplierId || undefined,
+          cases: Number(l.cases) || 0,
+          units: Number(l.units) || 0,
+          // Lines with nothing received still carry a cost so the server can validate them.
+          caseCost: parseCost(l.caseCost) ?? (lineUnits(l) > 0 ? null : l.refCaseCost ?? 0),
+        })),
+      idempotencyKey: rcv.idempotencyKey,
+    };
+    rcv.sending = true;
+    const button = $('rcv-send');
+    button.disabled = true;
+    $('rcv-review-cancel').disabled = true;
+    button.textContent = 'Receiving…';
+    setMessage($('rcv-review-error'), '');
+    try {
+      const result = await api('POST', '/receiving', body);
+      rcv.lastResult = result;
+      rcv.form = null;
+      $('rcv-dialog').close();
+      renderReceiptResult(result);
+      showView('receive-result');
+      window.scrollTo(0, 0);
+    } catch (err) {
+      if (err.status !== 401) {
+        let message = err.message;
+        if (err.data && err.data.fields) {
+          const extra = Object.values(err.data.fields).filter((v) => typeof v === 'string');
+          if (extra.length) message += ` ${[...new Set(extra)].join('. ')}.`;
+        }
+        setMessage($('rcv-review-error'), message);
+      }
+      button.disabled = false;
+      button.textContent = 'Try again';
+    } finally {
+      rcv.sending = false;
+      $('rcv-review-cancel').disabled = false;
+    }
+  });
+
+  function renderReceiptResult(r) {
+    const warn = !r.completed || r.warnings.length > 0;
+    $('rcv-result-title').textContent = r.completed
+      ? 'Delivery received: stock booked in'
+      : 'Delivery saved: waiting for a manager to complete';
+    $('rcv-result-card').className = `card result-card ${warn ? 'warn' : 'ok'}`;
+    summaryRows($('rcv-result-summary'), [
+      ['Supplier', r.supplier.name],
+      ['Location', r.location.name],
+      ['Supplier invoice', r.invoiceNumber],
+      ['TASK invoice', `#${r.invoiceId}`],
+      ['Invoice status', r.invoiceStatusLabel],
+      ['Purchase order', r.poId ? `#${r.poId}${r.poStatusLabel ? `: ${r.poStatusLabel}` : ''}` : 'No PO'],
+      ['Lines received', String(r.lineCount)],
+      ['Total', `${fmtMoney(r.totalExGst)} ex GST`],
+    ]);
+    const blocks = [];
+    if (r.warnings.length) blocks.push(el('div', { className: 'notice warn' }, el('ul', {}, r.warnings.map((t) => el('li', { text: t })))));
+    const info = [
+      ...r.shortages.map((s) => `Short: ${s.name}, ${qtyLabel(s.shortCases, s.shortUnits)} not delivered.`),
+      ...r.costChanges.map((c) => c.message),
+      r.unorderedCount ? `${r.unorderedCount} ${r.unorderedCount === 1 ? 'item' : 'items'} received that ${r.unorderedCount === 1 ? 'was' : 'were'} not on the PO.` : '',
+    ].filter(Boolean);
+    if (r.poId && !info.length && !r.warnings.length) info.push('Everything on the PO was received.');
+    if (info.length) blocks.push(el('div', { className: 'notice' }, el('ul', {}, info.map((t) => el('li', { text: t })))));
+    $('rcv-result-notes').replaceChildren(...blocks);
+  }
+
+  $('rcv-another').addEventListener('click', () => {
+    rcv.lastResult = null;
+    showView('receive-list');
+    loadOpenOrders();
+    window.scrollTo(0, 0);
+  });
+
+  // ================================================================ tabs
+  function canUseTab(tab) {
+    if (!state.clerk) return false;
+    if (tab === 'order') return Boolean(state.clerk.canOrder);
+    if (tab === 'receive') return Boolean(state.clerk.canReceive);
+    return false;
+  }
+
+  function showTab(tab) {
+    state.tab = tab;
+    if (tab === 'order') {
+      showView(state.lastResult ? 'result' : 'builder');
+    } else {
+      showView(rcv.lastResult ? 'receive-result' : rcv.form ? 'receive-form' : 'receive-list');
+      if (!rcv.lastResult && !rcv.form && rcv.locationNo) loadOpenOrders();
+    }
+  }
+
+  $('tabs').addEventListener('click', (e) => {
+    const button = e.target.closest('[data-tab]');
+    if (!button || !canUseTab(button.dataset.tab) || button.dataset.tab === state.tab) return;
+    showTab(button.dataset.tab);
+    // Stock on hand may have changed (e.g. after receiving): re-read the product list live.
+    if (button.dataset.tab === 'order' && state.productsReady && !state.lastResult) $('refresh-products').click();
   });
 
   init();

@@ -8,6 +8,8 @@ import { CatalogueChangedError, OrderError, ValidationError } from './poService.
 import { authRoutes } from './routes/auth.js';
 import { lookupRoutes } from './routes/lookups.js';
 import { orderRoutes } from './routes/orders.js';
+import { receivingRoutes } from './routes/receiving.js';
+import { ReceiptError } from './receiving.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -47,6 +49,7 @@ export function createApp({ config, task, mailer, store = createSessionStore({ i
   app.use('/api', authRoutes({ task, config }));
   app.use('/api', lookupRoutes({ task, config }));
   app.use('/api', orderRoutes({ task, mailer, config }));
+  app.use('/api', receivingRoutes({ task, config }));
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
   app.use(express.static(publicDir, { index: 'index.html', maxAge: config.production ? '1h' : 0 }));
@@ -58,6 +61,11 @@ export function createApp({ config, task, mailer, store = createSessionStore({ i
     if (err instanceof ValidationError) return res.status(400).json({ error: err.message, fields: err.fields });
     if (err instanceof CatalogueChangedError) {
       return res.status(409).json({ code: 'catalogue_changed', error: err.message, changes: err.changes });
+    }
+    if (err instanceof ReceiptError) {
+      return res
+        .status(err.status)
+        .json({ code: err.code, error: err.message, invoiceId: err.invoiceId, rolledBack: err.rolledBack });
     }
     if (err instanceof OrderError) {
       return res.status(502).json({ error: err.message, poId: err.poId, rolledBack: err.rolledBack });

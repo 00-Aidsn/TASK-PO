@@ -117,6 +117,31 @@ h2 { font-size: 1.1rem; }
 .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .who-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
 
+/* ---------- tabs ---------- */
+.tabs { display: flex; gap: 6px; max-width: 1100px; margin: 0 auto; padding: 12px 16px 0; }
+.tab {
+  font: inherit;
+  font-weight: 600;
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.tab:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 /* ---------- layout ---------- */
 main { max-width: 1100px; margin: 0 auto; padding: 16px; }
 .card {
@@ -233,6 +258,29 @@ th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color
   white-space: nowrap;
 }
 .btn-suggest { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; white-space: nowrap; }
+.badge-warn { background: var(--warn-soft); color: var(--warn); }
+.badge-info { background: var(--surface-2); color: var(--muted); }
+.flags .badge:first-child { margin-left: 8px; }
+
+/* ---------- receiving ---------- */
+.field.narrow { max-width: 420px; }
+.orders td { vertical-align: middle; }
+.orders td:first-child { font-weight: 700; white-space: nowrap; }
+.btn-small { min-height: 34px; padding: 4px 14px; }
+.receive tr.short { background: var(--warn-soft); }
+.receive tr.over { background: var(--accent-soft); }
+.receive input.cost { width: 104px; }
+.receive input.cost.changed { border-color: var(--warn); background: var(--warn-soft); }
+.cost-note { display: block; font-size: 0.75rem; color: var(--warn); white-space: nowrap; }
+.btn-remove { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; }
+.add-item { margin-top: 16px; max-width: 560px; }
+.add-results { list-style: none; margin: -4px 0 8px; padding: 0; display: grid; gap: 6px; }
+.add-results:empty { display: none; }
+.add-btn { width: 100%; justify-content: flex-start; text-align: left; font-weight: 400; flex-wrap: wrap; }
+.add-btn strong { margin-right: 6px; }
+.close-short { margin-top: 12px; white-space: normal; align-items: flex-start; }
+.close-short input { margin-top: 3px; }
+#rcv-result-notes .notice ul, #rcv-review-notes ul { margin: 6px 0 0; padding-left: 20px; }
 
 /* ---------- order bar ---------- */
 .order-bar {
@@ -252,6 +300,7 @@ th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color
 }
 .order-total { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .order-total strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.order-bar .btn { white-space: nowrap; flex: none; }
 
 /* ---------- dialog & summaries ---------- */
 dialog {
@@ -310,7 +359,33 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
-  .products input.qty { width: 100%; text-align: left; }
+  .products input.qty, .receive input.cost { width: 100%; text-align: left; }
+  .receive td.remove { grid-column: 1 / -1; }
+  .receive td.remove:empty { display: none; }
+
+  .orders thead { display: none; }
+  .orders, .orders tbody { display: block; }
+  .orders tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .orders td { display: block; border: 0; padding: 0; }
+  .orders td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .orders td.action { grid-column: 1 / -1; }
+  .orders td.action::before { content: none; }
+  .orders td.action .btn { width: 100%; }
+  .tabs { padding: 10px 16px 0; }
+  .tab { flex: 1; padding: 8px 10px; }
   .summary { grid-template-columns: 1fr; gap: 0; }
   .summary dd { margin-bottom: 8px; }
   .actions .btn { flex: 1; }

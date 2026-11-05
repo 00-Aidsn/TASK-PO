@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireClerk } from '../session.js';
+import { requireClerk, requirePermission } from '../session.js';
 import { TaskApiError } from '../taskClient.js';
 import { findLocation, getCatalogue, getSupplierLive } from '../catalogue.js';
 import {
@@ -19,7 +19,7 @@ const IDEMPOTENCY_MS = 30 * 60_000;
 
 export function orderRoutes({ task, mailer, config }) {
   const router = Router();
-  router.use(requireClerk);
+  router.use('/orders', requireClerk, requirePermission('canOrder', 'Your TASK account is not allowed to create purchase orders.'));
 
   const isSessionError = (err) => err instanceof TaskApiError && ['unauthorized', 'session_expired'].includes(err.kind);
 

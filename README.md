@@ -1,6 +1,6 @@
 # TASK Purchase Orders
 
-A small web app for Mad Mex clerks to build a purchase order (PO) in **TASK** (XchangeFusion API v3) and send it to the supplier.
+A small web app for Mad Mex clerks to build a purchase order (PO) in **TASK** (XchangeFusion API v3) and send it to the supplier, then **receive the delivery** into stock when it arrives (see [Receiving deliveries](#receiving-deliveries)).
 
 > **First draft.** Have IT/purchasing review this code and the supplier email wording before it is used in production. The email goes to external suppliers.
 
@@ -61,7 +61,10 @@ If anything changed, **nothing is created or sent**. The clerk sees what changed
 
   The clerk then signs in again. A draft order is kept if the same clerk signs back in.
 - Passwords are used only for the TASK login call. They are never stored or logged.
-- Clerks without the TASK permission `CanCreatePurchaseOrders` are refused at sign-in.
+- What a clerk can do depends on their TASK permissions:
+  - **New order** needs "create purchase orders".
+  - **Receive delivery** needs "create invoices", because TASK books deliveries in as supplier invoices.
+  - Clerks with both permissions see both tabs. Clerks with neither are refused at sign-in.
 - Repeated failed sign-ins are rate-limited per IP: 10 per 15 minutes.
 - Sessions are held in memory, so restarting the server signs everyone out.
 
@@ -97,9 +100,13 @@ This runs the app against an in-memory fake TASK API with demo data. Emails are 
 
 | Login | Behaviour |
 |---|---|
-| `manager@example.com` | Can create and approve: POs are approved and emailed |
-| `crew@example.com` | Can create only: POs are saved as Awaiting approval |
-| `viewer@example.com` | No PO permission: sign-in is refused |
+| `manager@example.com` | Orders (approved and emailed) and receives (invoices completed) |
+| `crew@example.com` | Orders (saved as Awaiting approval) and receives (invoices left for a manager) |
+| `receiver@example.com` | Receive only (invoices completed) |
+| `buyer@example.com` | Order only |
+| `viewer@example.com` | No PO or invoice permission: sign-in is refused |
+
+Demo mode includes some open POs to receive. Completing a demo invoice adds its stock to on hand, so you can watch the order screen's stock figures change.
 
 ## Stock on hand and suggested quantities
 
@@ -113,6 +120,29 @@ Details:
 - Stock already on open POs is **not** counted. Suggestions are based on stock on hand only.
 - Stock is advisory. If TASK can't return stock levels, the products still load, the screen says "Stock levels unavailable", and POs can still be sent.
 - Stock levels are not included in the supplier email, and are not re-checked when sending.
+
+## Receiving deliveries
+
+The **Receive delivery** tab books a delivery into TASK. TASK records stock deliveries as **supplier invoices** (stock movement type "Invoice").
+
+1. **Choose the delivery.** Pick the store to see its purchase orders waiting to be received: Approved, Order packed, Order dispatched or Partially received. These are read live from TASK. For a delivery with no PO, choose the supplier instead.
+2. **Check what arrived.** For a PO, quantities start as what is still to come. Clerks can:
+   - change quantities for short or different deliveries. Short lines are flagged, and so are lines with more than ordered.
+   - change a line's **case cost** when the invoice price differs from the PO. The PO price is shown next to it.
+   - **add items that weren't ordered**, from the supplier's active products in TASK. Products without a venue cost can be added with the invoice cost.
+   - for a short PO, choose whether to **close the PO** or leave it **Partially received** so the rest can be received later.
+3. **Enter the supplier's invoice or docket number and date, then review.** The review lists shortages, cost changes and extra items, and says whether the stock will be booked in now.
+4. **Receive.** The app:
+   1. Creates the supplier invoice in TASK, linked to the PO, with one line per item received. Costs are ex GST.
+   2. **Completes the invoice**, which books the stock in, if the clerk has TASK's "commit invoices" permission. Otherwise the invoice is saved for a manager to check and complete in TASK.
+   3. Updates the PO lines' received cases and units, and sets the PO to **Stock received** or **Partially received**.
+
+Safeguards:
+- **Live checks:** the PO and products are re-read from TASK when receiving. A PO that has already been received, or one for a different store or supplier, is refused.
+- **No duplicate invoices:** the same supplier invoice number can't be entered twice for the same supplier.
+- **Rollback:** if TASK rejects an invoice line, the invoice is deleted and nothing is received.
+- **Partial failures:** if completing the invoice or updating the PO fails, the receipt is kept and the clerk is told exactly what to finish in TASK.
+- **Double submits:** pressing Receive twice, or a network retry, doesn't receive the delivery twice.
 
 ## Configuration (`.env`)
 
@@ -154,7 +184,9 @@ All calls go to `{TASK_BASE_URL}/api/v3`. Every call sends the `Key` header. Aft
 | Stock on hand and min/max (live) | `GET /products/location/{locationNo}/stock/products?productIds=…` (50 products per call) |
 | PO templates | `GET /purchaseOrder/templates`, `GET /purchaseOrder/templates/{id}/items` |
 | Create / read / update / delete PO | `POST /purchaseOrder`, `GET`/`PUT`/`DELETE /purchaseOrder/{id}` |
-| PO lines | `POST`/`GET /purchaseOrder/{id}/items` |
+| PO lines | `POST`/`GET /purchaseOrder/{id}/items`, `PUT /purchaseOrder/{id}/items/{itemId}` (received quantities) |
+| POs to receive (live) | `GET /purchaseOrder?stockLocationNo=&orderStatus=` (statuses 1, 2, 3 and 10) |
+| Supplier invoices (receiving) | `GET /invoice?supplierId=&reference=` (duplicate check), `POST /invoice`, `POST /invoice/{id}/items`, `GET`/`PUT /invoice/{id}` (complete), `DELETE /invoice/{id}` (rollback) |
 
 Field names come from the TASK Swagger spec (`/swagger/docs/v3`).
 
@@ -181,6 +213,14 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - Min and max levels are maintained in TASK for the products stores order.
 7. Check the email in `./outbox`. Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
 8. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
+9. Confirm receiving with a test PO, in this order:
+   - **Booking stock in:** completing an invoice (`PUT /invoice/{id}` with `IsComplete: true`) adds the stock. Stock on hand should rise by the units received.
+   - **No double counting:** TASK does **not** also update the PO's received quantities when an invoice linked to it (`PurchaseOrderNo`) is completed. The app updates the PO itself; if TASK does it too, the PO would be counted twice and the app's PO update should be removed.
+   - **Invoice item fields:** `Cost` is the case cost ex GST, `UnitCost` the unit cost ex GST, and `CaseCount`/`UnitCount` the received quantities. Check the invoice total in TASK.
+   - **GST:** the app does not send `TaxPercentage`. Check that TASK applies each product's GST rate on the invoice.
+   - **Duplicate check:** `GET /invoice?reference=` finds an existing invoice number. The app also compares the number exactly, ignoring case.
+   - **Permissions:** clerks with "create invoices" but not "commit invoices" can save an invoice, and a manager can then complete it in TASK.
+   - **Statuses:** PO statuses `Stock received` (4) and `Partially received` (10) behave as expected in TASK reports.
 
 ## Development
 
@@ -194,6 +234,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - live supplier and product checks: no caching, and hidden reasons
 - send-time re-checks for price, product status, supplier status and supplier email
 - stock levels, suggested cases, the 50-product chunking, and a stock failure not blocking orders
+- receiving: permissions; the open PO list; full, short and closed-short deliveries; invoices completed or left for a manager; cost changes; items not on the PO; deliveries with no PO; duplicate invoice numbers; rollback and partial failures; validation; double submits
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard
 - that the API key and tokens never appear in responses
@@ -207,9 +248,10 @@ src/
   session.js       in-memory sessions, cookie, idle timeout
   catalogue.js     locations; live suppliers, supplier products, venue costs, product status and stock; templates
   poService.js     order validation, PO creation with rollback, supplier email
+  receiving.js     receipt validation, invoice + PO updates with rollback
   emailTemplate.js supplier email (HTML + text)
   mailer.js        SMTP or log-to-outbox
-  routes/          /api/login, /api/logout, /api/me, lookups, orders
+  routes/          /api/login, /api/logout, /api/me, lookups, orders, receiving
 public/            browser UI (plain HTML/CSS/JS, no build step)
 test/              tests and the fake TASK API
 scripts/dev-mock.js demo mode

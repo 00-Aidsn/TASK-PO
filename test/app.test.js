@@ -1,7 +1,6 @@
 import { after, before, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MOCK_API_KEY, MOCK_PASSWORD, startStack, tomorrow } from './helpers.js';
-import { sampleData } from './mockTask.js';
 
 let stack;
 before(async () => {
@@ -15,12 +14,7 @@ after(async () => {
   await stack.close();
 });
 beforeEach(() => {
-  stack.mock.data = sampleData(); // tests may change TASK data to prove reads are live
-  stack.mock.failItemForProductId = null;
-  stack.mock.failPurchaseOrderPut = false;
-  stack.mock.failDelete = false;
-  stack.mock.failStock = null;
-  stack.mock.expireTokens = false;
+  stack.mock.reset(); // fresh TASK data, sample POs and failure switches for every test
   stack.mailer.fail = false;
   stack.mailer.sent.length = 0;
 });
@@ -65,7 +59,7 @@ describe('sign-in', () => {
     const c = stack.client();
     const res = await c.req('POST', '/api/login', { login: 'viewer@example.com', password: MOCK_PASSWORD, loginType: 0 });
     assert.equal(res.status, 403);
-    assert.match(res.data.error, /not allowed to create purchase orders/);
+    assert.match(res.data.error, /not allowed to create purchase orders or receive stock/);
     assert.equal(c.cookie, '');
   });
 
@@ -74,7 +68,15 @@ describe('sign-in', () => {
     const c = stack.client();
     const res = await c.req('POST', '/api/login', { login: 'manager@example.com', password: MOCK_PASSWORD, loginType: 0 });
     assert.equal(res.status, 200);
-    assert.deepEqual(res.data.clerk, { id: 101, name: 'Sam Manager', email: 'manager@example.com', canApprove: true });
+    assert.deepEqual(res.data.clerk, {
+      id: 101,
+      name: 'Sam Manager',
+      email: 'manager@example.com',
+      canOrder: true,
+      canApprove: true,
+      canReceive: true,
+      canCommitInvoices: true,
+    });
     const cookie = res.headers.get('set-cookie');
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /SameSite=Strict/);

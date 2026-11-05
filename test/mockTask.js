@@ -23,6 +23,8 @@ export function sampleData() {
           Venues: [1, 2],
           CanCreatePurchaseOrders: true,
           CanApprovePurchaseOrders: true,
+          CanCreateInvoices: true,
+          CanCommitInvoices: true,
         },
       },
       {
@@ -37,6 +39,8 @@ export function sampleData() {
           Venues: [1],
           CanCreatePurchaseOrders: true,
           CanApprovePurchaseOrders: false,
+          CanCreateInvoices: true,
+          CanCommitInvoices: false,
         },
       },
       {
@@ -50,6 +54,38 @@ export function sampleData() {
           Locations: [11],
           CanCreatePurchaseOrders: false,
           CanApprovePurchaseOrders: false,
+          CanCreateInvoices: false,
+          CanCommitInvoices: false,
+        },
+      },
+      {
+        login: 'receiver@example.com',
+        loginType: 0,
+        clerk: {
+          UserId: 104,
+          AuthNiceName: 'Riley Receiver',
+          Email: 'receiver@example.com',
+          IsAuthenticated: true,
+          Locations: [11],
+          CanCreatePurchaseOrders: false,
+          CanApprovePurchaseOrders: false,
+          CanCreateInvoices: true,
+          CanCommitInvoices: true,
+        },
+      },
+      {
+        login: 'buyer@example.com',
+        loginType: 0,
+        clerk: {
+          UserId: 105,
+          AuthNiceName: 'Bailey Buyer',
+          Email: 'buyer@example.com',
+          IsAuthenticated: true,
+          Locations: [11],
+          CanCreatePurchaseOrders: true,
+          CanApprovePurchaseOrders: true,
+          CanCreateInvoices: false,
+          CanCommitInvoices: false,
         },
       },
     ],
@@ -151,8 +187,37 @@ export function sampleData() {
       ],
       9003: [{ PurchaseItemID: 4, PurchaseOrderID: 9003, ProductSupplierID: 602, ProductID: 2002, Cases: 1, Units: 0 }],
     },
+    // Existing purchase orders, so there is something to receive.
+    purchaseOrders: [
+      { PurchaseOrderID: 4001, SupplierID: 1, StockLocationNo: 11, OrderStatus: 1, ClerkID: 101, CustomerPO: 'Weekly produce', Created: '2026-11-03T22:00:00.000Z', DeliveryDate: '2026-11-06T00:00:00.000Z', Emailed: true },
+      { PurchaseOrderID: 4002, SupplierID: 2, StockLocationNo: 11, OrderStatus: 10, ClerkID: 101, CustomerPO: 'Packaging top-up', Created: '2026-11-01T22:00:00.000Z', DeliveryDate: '2026-11-04T00:00:00.000Z', Emailed: true },
+      { PurchaseOrderID: 4003, SupplierID: 1, StockLocationNo: 12, OrderStatus: 1, ClerkID: 101, Created: '2026-11-03T22:00:00.000Z' },
+      { PurchaseOrderID: 4004, SupplierID: 1, StockLocationNo: 11, OrderStatus: 0, ClerkID: 102, Created: '2026-11-04T22:00:00.000Z' },
+      { PurchaseOrderID: 4005, SupplierID: 1, StockLocationNo: 11, OrderStatus: 4, ClerkID: 101, Created: '2026-10-28T22:00:00.000Z' },
+    ],
+    purchaseOrderItems: {
+      4001: [
+        { PurchaseItemID: 9101, PurchaseOrderID: 4001, ProductID: 1001, ProductSupplierID: 501, Cases: 4, Units: 0, CaseQty: 20, TotalUnits: 80, ExGST: 45, UnitExGST: 2.25, ReceivedCases: 0, ReceivedUnits: 0 },
+        { PurchaseItemID: 9102, PurchaseOrderID: 4001, ProductID: 1002, ProductSupplierID: 502, Cases: 2, Units: 1, CaseQty: 5, TotalUnits: 11, ExGST: 18.5, UnitExGST: 3.7, ReceivedCases: 0, ReceivedUnits: 0 },
+        { PurchaseItemID: 9103, PurchaseOrderID: 4001, ProductID: 1003, ProductSupplierID: 503, Cases: 1, Units: 0, CaseQty: 12, TotalUnits: 12, ExGST: 15.6, UnitExGST: 1.3, ReceivedCases: 0, ReceivedUnits: 0 },
+      ],
+      4002: [
+        { PurchaseItemID: 9201, PurchaseOrderID: 4002, ProductID: 2002, ProductSupplierID: 602, Cases: 2, Units: 0, CaseQty: 300, TotalUnits: 600, ExGST: 96, UnitExGST: 0.32, ReceivedCases: 1, ReceivedUnits: 0 },
+      ],
+      4003: [
+        { PurchaseItemID: 9301, PurchaseOrderID: 4003, ProductID: 1001, ProductSupplierID: 501, Cases: 2, Units: 0, CaseQty: 20, TotalUnits: 40, ExGST: 47, UnitExGST: 2.35, ReceivedCases: 0, ReceivedUnits: 0 },
+      ],
+      4004: [
+        { PurchaseItemID: 9401, PurchaseOrderID: 4004, ProductID: 1001, ProductSupplierID: 501, Cases: 1, Units: 0, CaseQty: 20, TotalUnits: 20, ExGST: 45, UnitExGST: 2.25, ReceivedCases: 0, ReceivedUnits: 0 },
+      ],
+      4005: [
+        { PurchaseItemID: 9501, PurchaseOrderID: 4005, ProductID: 1001, ProductSupplierID: 501, Cases: 1, Units: 0, CaseQty: 20, TotalUnits: 20, ExGST: 45, UnitExGST: 2.25, ReceivedCases: 1, ReceivedUnits: 0 },
+      ],
+    },
   };
 }
+
+const clone = (v) => JSON.parse(JSON.stringify(v));
 
 export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD, data = sampleData() } = {}) {
   const state = {
@@ -162,14 +227,46 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
     purchaseOrderItems: new Map(),
     nextPoId: 5001,
     nextItemId: 1,
+    invoices: new Map(),
+    invoiceItems: new Map(),
+    nextInvoiceId: 7001,
+    nextInvoiceItemId: 1,
     requests: [],
     // failure injection for tests
     failItemForProductId: null,
     failPurchaseOrderPut: false,
     failDelete: false,
     failStock: null, // HTTP status to return from the stock endpoint, e.g. 500 or 440
+    failInvoiceItemForProductId: null,
+    failInvoiceComplete: false,
+    failInvoiceDelete: false,
+    failPoItemPut: false,
     expireTokens: false,
   };
+
+  /** Restores the sample data, seeded POs and failure switches (tokens are kept). */
+  state.reset = () => {
+    state.data = sampleData();
+    state.purchaseOrders = new Map(clone(state.data.purchaseOrders).map((po) => [po.PurchaseOrderID, po]));
+    state.purchaseOrderItems = new Map(
+      Object.entries(clone(state.data.purchaseOrderItems)).map(([id, items]) => [Number(id), items]),
+    );
+    state.invoices = new Map();
+    state.invoiceItems = new Map();
+    Object.assign(state, {
+      failItemForProductId: null,
+      failPurchaseOrderPut: false,
+      failDelete: false,
+      failStock: null,
+      failInvoiceItemForProductId: null,
+      failInvoiceComplete: false,
+      failInvoiceDelete: false,
+      failPoItemPut: false,
+      expireTokens: false,
+    });
+  };
+  state.reset();
+  if (data !== state.data) state.data = data;
 
   const app = express();
   app.use(express.json());
@@ -262,6 +359,105 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
   app.get(`${base}/purchaseOrder/templates/:id/items`, (req, res) =>
     paged(req, res, state.data.templateItems[Number(req.params.id)] || []),
   );
+
+  app.get(`${base}/purchaseOrder`, (req, res) => {
+    const f = (k) => (req.query[k] === undefined ? null : Number(req.query[k]));
+    const [supplierId, loc, status] = [f('supplierId'), f('stockLocationNo'), f('orderStatus')];
+    paged(
+      req,
+      res,
+      [...state.purchaseOrders.values()].filter(
+        (po) =>
+          (supplierId === null || po.SupplierID === supplierId) &&
+          (loc === null || po.StockLocationNo === loc) &&
+          (status === null || po.OrderStatus === status),
+      ),
+    );
+  });
+  app.put(`${base}/purchaseOrder/:id/items/:itemId`, (req, res) => {
+    const items = state.purchaseOrderItems.get(Number(req.params.id));
+    const i = items ? items.findIndex((x) => x.PurchaseItemID === Number(req.params.itemId)) : -1;
+    if (i < 0) return res.status(404).json({ Message: 'Purchase order item not found' });
+    if (state.failPoItemPut) return res.status(500).json({ Message: 'Could not update item' });
+    items[i] = { ...req.body, PurchaseItemID: items[i].PurchaseItemID, PurchaseOrderID: Number(req.params.id) };
+    res.json(true);
+  });
+
+  // --- invoices: completing an invoice books its stock in (as TASK's "Invoice" stock movement)
+  app.get(`${base}/invoice`, (req, res) => {
+    const supplierId = req.query.supplierId ? Number(req.query.supplierId) : null;
+    const loc = req.query.locationNo ? Number(req.query.locationNo) : null;
+    const ref = req.query.reference ? String(req.query.reference).toLowerCase() : null;
+    paged(
+      req,
+      res,
+      [...state.invoices.values()].filter(
+        (inv) =>
+          (supplierId === null || inv.SupplierId === supplierId) &&
+          (loc === null || inv.LocationNo === loc) &&
+          (ref === null || String(inv.Reference || '').toLowerCase().includes(ref)),
+      ),
+    );
+  });
+  app.post(`${base}/invoice`, (req, res) => {
+    const id = state.nextInvoiceId++;
+    const inv = { ...req.body, InvoiceId: id, ClerkId: req.account.clerk.UserId, IsComplete: false, ProcessedDate: null };
+    state.invoices.set(id, inv);
+    state.invoiceItems.set(id, []);
+    res.json(inv);
+  });
+  app.get(`${base}/invoice/:id`, (req, res) => {
+    const inv = state.invoices.get(Number(req.params.id));
+    if (!inv) return res.status(404).json({ Message: 'Invoice not found' });
+    res.json(inv);
+  });
+  app.put(`${base}/invoice/:id`, (req, res) => {
+    const id = Number(req.params.id);
+    const inv = state.invoices.get(id);
+    if (!inv) return res.status(404).json({ Message: 'Invoice not found' });
+    if (state.failInvoiceComplete && req.body?.IsComplete) return res.status(500).json({ Message: 'Invoice could not be processed' });
+    const completing = !inv.IsComplete && req.body?.IsComplete === true;
+    const updated = { ...inv, ...req.body, InvoiceId: id };
+    if (completing) {
+      updated.ProcessedDate = new Date().toISOString();
+      for (const item of state.invoiceItems.get(id) || []) {
+        let rec = state.data.stock.find((s) => s.LocationNo === inv.LocationNo && s.ProductId === item.ProductId);
+        if (!rec) {
+          rec = { StockId: state.data.stock.length + 1, ProductId: item.ProductId, LocationNo: inv.LocationNo, Stock: 0, MinStockLevel: 0, MaxStockLevel: 0 };
+          state.data.stock.push(rec);
+        }
+        rec.Stock = Math.round((rec.Stock + item.TotalUnits) * 1000) / 1000;
+      }
+    }
+    state.invoices.set(id, updated);
+    res.json(true);
+  });
+  app.delete(`${base}/invoice/:id`, (req, res) => {
+    if (state.failInvoiceDelete) return res.status(500).json({ Message: 'Delete failed' });
+    state.invoices.delete(Number(req.params.id));
+    state.invoiceItems.delete(Number(req.params.id));
+    res.json(true);
+  });
+  app.get(`${base}/invoice/:id/items`, (req, res) => paged(req, res, state.invoiceItems.get(Number(req.params.id)) || []));
+  app.post(`${base}/invoice/:id/items`, (req, res) => {
+    const id = Number(req.params.id);
+    const items = state.invoiceItems.get(id);
+    if (!items) return res.status(404).json({ Message: 'Invoice not found' });
+    if (state.failInvoiceItemForProductId !== null && req.body?.ProductId === state.failInvoiceItemForProductId) {
+      return res.status(500).json({ Message: 'Product not valid for invoice' });
+    }
+    const b = req.body || {};
+    const caseQty = b.CaseQty > 0 ? b.CaseQty : 1;
+    const item = {
+      ...b,
+      InvoiceItemId: state.nextInvoiceItemId++,
+      InvoiceId: id,
+      TotalUnits: (b.CaseCount || 0) * caseQty + (b.UnitCount || 0),
+      TotalEx: Math.round(((b.CaseCount || 0) * (b.Cost || 0) + (b.UnitCount || 0) * (b.UnitCost || 0)) * 100) / 100,
+    };
+    items.push(item);
+    res.json(item);
+  });
 
   app.post(`${base}/purchaseOrder`, (req, res) => {
     const id = state.nextPoId++;

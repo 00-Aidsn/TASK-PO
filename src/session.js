@@ -91,6 +91,14 @@ export function sessionMiddleware({ store, cookieSecure }) {
   };
 }
 
+/** Route guard for a TASK permission held in the session, e.g. requirePermission('canReceive', '...'). */
+export function requirePermission(flag, message) {
+  return (req, res, next) => {
+    if (!req.session?.clerk?.[flag]) return res.status(403).json({ code: 'not_permitted', error: message });
+    next();
+  };
+}
+
 export function requireClerk(req, res, next) {
   if (!req.session) {
     return res.status(401).json({ code: 'signed_out', error: 'Please sign in with your TASK clerk login.' });
