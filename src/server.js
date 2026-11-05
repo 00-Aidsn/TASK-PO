@@ -44,7 +44,7 @@ const sync = config.sync.enabled
   : null;
 sync?.start();
 const app = createApp({ config, task, mailer, store, settings, entra, sync });
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`TASK purchase orders running on http://localhost:${config.port}`);
   const c = settings.current();
   console.log(`  TASK API: ${c.baseUrl || '(not set)'} [${c.environmentName || 'environment not named'}] from ${c.source === 'admin' ? 'admin panel' : '.env'}`);
@@ -52,3 +52,29 @@ app.listen(config.port, () => {
   console.log(`  Hub sync: ${sync ? `${config.sync.hub.table} at ${new URL(config.sync.hub.url).host}, ${config.sync.intervalMinutes ? `every ${config.sync.intervalMinutes} min` : 'manual only'}` : 'off (set HUB_SUPABASE_URL to enable)'}`);
   console.log(`  Email:    ${config.mail.mode === 'smtp' ? `SMTP via ${config.mail.smtp.host}` : `log only (written to ./${config.mail.outboxDir})`}`);
 });
+
+// Clean shutdown (Azure App Service sends SIGTERM on restarts and deploys): stop the sync timer, let a
+// running sync and in-flight requests finish, then exit. Gives up after 15 seconds.
+let stopping = false;
+function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.log(`[server] ${signal}: shutting down`);
+  sync?.stop();
+  const force = setTimeout(() => {
+    console.error('[server] still busy after 15s; exiting anyway');
+    process.exit(1);
+  }, 15_000);
+  force.unref();
+  server.close(() => {
+    const waitForSync = () => {
+      if (sync?.status().running) return setTimeout(waitForSync, 200);
+      console.log('[server] stopped');
+      process.exit(0);
+    };
+    waitForSync();
+  });
+  server.closeIdleConnections?.();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

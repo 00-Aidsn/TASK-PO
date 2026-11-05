@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -16,6 +17,21 @@ import { SyncError } from './sync/clerkSync.js';
 import { HubError } from './sync/hubClient.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+const digest = (value) => crypto.createHash('sha256').update(String(value)).digest();
+
+/**
+ * Only serve requests that came through Cloudflare: a Cloudflare Transform Rule adds the header
+ * X-Origin-Verify with the shared secret. Compared in constant time (via SHA-256 so lengths match).
+ */
+function cloudflareOnly(secrets) {
+  const expected = secrets.map(digest);
+  return (req, res, next) => {
+    const got = req.get('x-origin-verify');
+    if (got && expected.some((e) => crypto.timingSafeEqual(e, digest(got)))) return next();
+    res.status(403).type('text/plain').send('Forbidden');
+  };
+}
 
 /**
  * @param {object} deps
@@ -41,6 +57,12 @@ export function createApp({
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
+
+  // Health check for Azure App Service and monitoring: no secrets, no TASK call, no session.
+  app.get('/healthz', (req, res) => {
+    res.set('Cache-Control', 'no-store').json({ status: 'ok' });
+  });
+  if (config.originSecrets?.length) app.use(cloudflareOnly(config.originSecrets));
 
   app.use(
     helmet({

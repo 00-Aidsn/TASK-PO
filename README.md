@@ -68,6 +68,14 @@ If anything changed, **nothing is created or sent**. The clerk sees what changed
 - Repeated failed sign-ins are rate-limited per IP: 10 per 15 minutes.
 - Sessions are held in memory, so restarting the server signs everyone out.
 
+## Hosting
+
+Run it on **Azure App Service** (Linux, Node 22, Australia East), behind **Cloudflare**. Use one always-on instance, with `DATA_DIR` on persistent storage and secrets in Azure Key Vault. Step-by-step guide: [docs/hosting-azure-cloudflare.md](docs/hosting-azure-cloudflare.md). It covers why not Cloudflare Workers, Azure and Key Vault set-up, GitHub deploys without stored passwords, Cloudflare DNS/TLS/WAF, and a first-deploy checklist.
+
+- `GET /healthz` answers `{"status":"ok"}` for health checks.
+- The app stops cleanly on `SIGTERM`.
+- Deploys run from **Actions → Deploy to Azure App Service**, started by hand. The workflow runs all tests first.
+
 ## Setup
 
 Requires Node.js 20 or later.
@@ -228,7 +236,8 @@ The central hub (Supabase) is the **master list of staff**. The sync keeps TASK 
 | `PORT` | `3000` | Web server port |
 | `SESSION_IDLE_MINUTES` | `30` | Idle minutes before sign-out |
 | `COOKIE_SECURE` | true when `NODE_ENV=production` | Set `true` when served over HTTPS |
-| `TRUST_PROXY` | (blank) | Set if behind a reverse proxy, e.g. `1` |
+| `TRUST_PROXY` | (blank) | Number of proxies in front of the app (Azure + Cloudflare: `2`), so the sign-in rate limiter sees real clerk IPs |
+| `CLOUDFLARE_ORIGIN_SECRET` | (blank) | When set, only requests with this `X-Origin-Verify` header (added by Cloudflare) are served; `/healthz` is exempt |
 | `DISPLAY_TIMEZONE` | `Australia/Sydney` | Time zone for dates in the UI and emails |
 | `COMPANY_NAME` | `Mad Mex` | Shown in the header and emails |
 | `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` | (blank) | Turn on the admin panel. See [Admin panel](#admin-panel-microsoft-entra-sign-in) |
@@ -334,6 +343,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - stock levels, suggested cases, the 50-product chunking, and a stock failure not blocking orders
 - admin panel: Entra sign-in (PKCE, state, nonce, replayed or forged callbacks, other users and other tenants refused, object-ID allow-list); key masking; connection tests; approved hosts only; saves that TASK rejects aren't stored; a change switching every TASK call to the new server and key and signing clerks out; encryption at rest and restart; change history without key material; changes from other websites blocked
 - hub sync: preview changes nothing; matching by link, email, then name (approval-only, exact pairs); scheduled runs never apply name matches; only synced fields change and HR data and passwords are untouched; creation defaults; deactivation and reactivation; protected admins and the sync account; size limits held; an empty or unreachable hub changes nothing; TASK session renewal; links kept per TASK server; history without personal values
+- hosting: `/healthz`, the Cloudflare-only origin header (including secret rotation), and `TRUST_PROXY` hop counts giving real clerk IPs to the rate limiter
 - receiving: permissions; the open PO list; full, short and closed-short deliveries; invoices completed or left for a manager; cost changes; items not on the PO; deliveries with no PO; duplicate invoice numbers; rollback and partial failures; validation; double submits
 - the full send flow, rollback, email retry and idempotency
 - email escaping and the paging guard

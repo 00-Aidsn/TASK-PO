@@ -1,0 +1,72 @@
+# Deploys the PO app to Azure App Service. Started by hand from the Actions tab, never automatically.
+# Set-up (once): docs/hosting-azure-cloudflare.md, "Deploying from GitHub".
+#
+# Each GitHub environment ("uat", "production") holds these variables (not secrets; no passwords):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  - identity GitHub signs in to Azure as (OIDC)
+#   AZURE_WEBAPP_NAME                                       - the App Service to deploy to
+# Add "required reviewers" to the production environment so a second person approves production deploys.
+name: Deploy to Azure App Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy
+        type: choice
+        options: [uat, production]
+        default: uat
+
+permissions:
+  id-token: write # GitHub OIDC sign-in to Azure, so no Azure password is stored in GitHub
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test and deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Package (app code and production dependencies only)
+        run: |
+          npm ci --omit=dev
+          zip -qr app.zip package.json package-lock.json src public node_modules
+          unzip -l app.zip | tail -1
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          package: app.zip
+
+      - name: Check the app is up
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS "https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/healthz"; then exit 0; fi
+            sleep 10
+          done
+          echo "The app did not answer /healthz after deploying" >&2
+          exit 1

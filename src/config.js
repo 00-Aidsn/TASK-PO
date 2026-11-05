@@ -23,6 +23,18 @@ function bool(value, fallback) {
   return /^(1|true|yes|on)$/i.test(String(value).trim());
 }
 
+/**
+ * Express "trust proxy": a hop count must be a number. The text "2" would be read as an IP address.
+ * Accepts a number of hops (e.g. 2 for Cloudflare + Azure), true/false, or Express names like "loopback".
+ */
+export function parseTrustProxy(value) {
+  const text = String(value ?? '').trim();
+  if (!text || /^(false|no|off|0)$/i.test(text)) return false;
+  if (/^\d+$/.test(text)) return Number(text);
+  if (/^(true|yes|on)$/i.test(text)) return true;
+  return text;
+}
+
 function list(value) {
   return (value || '')
     .split(',')
@@ -39,7 +51,10 @@ export function loadConfig(env = process.env) {
   const config = {
     port: int(env.PORT, 3000, 'PORT'),
     production,
-    trustProxy: env.TRUST_PROXY || false,
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    // When set, only requests carrying X-Origin-Verify with one of these values are served (added by a
+    // Cloudflare Transform Rule), so nobody can bypass Cloudflare. Comma-separate two values while rotating.
+    originSecrets: list(env.CLOUDFLARE_ORIGIN_SECRET),
     cookieSecure: bool(env.COOKIE_SECURE, production),
     sessionIdleMinutes: int(env.SESSION_IDLE_MINUTES, 30, 'SESSION_IDLE_MINUTES'),
     displayTimeZone: env.DISPLAY_TIMEZONE || 'Australia/Sydney',
@@ -132,6 +147,9 @@ export function loadConfig(env = process.env) {
   // Without the admin panel the API key must come from the environment; with it, it can be set in the panel.
   if (!config.task.apiKey && !admin.enabled) problems.push('TASK_API_KEY is required');
   if (!config.task.allowedHosts.length) problems.push('TASK_ALLOWED_HOSTS must list at least one host');
+  if (config.originSecrets.some((s) => s.length < 32)) {
+    problems.push('CLOUDFLARE_ORIGIN_SECRET must be at least 32 characters, e.g. from: openssl rand -hex 32');
+  }
   if (admin.enabled) {
     if (!GUID.test(admin.tenantId)) problems.push('ENTRA_TENANT_ID must be your Entra directory (tenant) ID');
     if (!GUID.test(admin.clientId)) problems.push('ENTRA_CLIENT_ID must be the app registration\'s application (client) ID');
