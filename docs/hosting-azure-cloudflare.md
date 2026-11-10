@@ -62,6 +62,7 @@ az webapp identity assign --name task-po-uat --resource-group rg-task-po
 ```
 
 Then:
+- **Default domain:** note the web app's **Default domain** on its Overview page. New web apps may get a unique one such as `task-po-uat-a1b2c3.australiaeast-01.azurewebsites.net` instead of `task-po-uat.azurewebsites.net`. Use whatever Azure shows wherever this guide says `<default domain>`.
 - **Scale out:** keep it at **1 instance**. Don't turn on autoscale.
 - **Plan size:** B1 or B2 is plenty. P0v3 adds deployment slots, if you want them.
 
@@ -133,7 +134,7 @@ To deploy: **Actions → Deploy to Azure App Service → Run workflow**, then ch
 
 For each hostname (`po` and, for UAT, `po-uat`):
 
-1. **DNS:** add a CNAME `po` → `task-po-prod.azurewebsites.net`.
+1. **DNS:** add a CNAME `po` → the production web app's `<default domain>` (e.g. `task-po-prod.azurewebsites.net`).
 2. **Custom domain and certificate in Azure:**
    - Web app → Custom domains → Add. Azure asks for a TXT record `asuid.po`; add it in Cloudflare.
    - While Azure validates and issues the free managed certificate, set the `po` record to **DNS only** (grey cloud).
@@ -159,7 +160,7 @@ For each hostname (`po` and, for UAT, `po-uat`):
 
 1. Run the workflow for `uat`.
 2. Through Cloudflare, `https://po-uat.<your domain>/healthz` should return `{"status":"ok"}`.
-3. Directly, `https://task-po-uat.azurewebsites.net/` should return **403** (that proves the origin header is working).
+3. Directly, `https://<default domain>/` should return **403** (that proves the origin header is working).
 4. Sign in at `/admin` with Microsoft, then press **Test current connection**.
 5. Sign in as a test clerk. Build and send a PO (email in log mode), then receive one.
 6. In the admin panel, run **Preview sync**. Do the hub sync UAT checks in the README before applying.

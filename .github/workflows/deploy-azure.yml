@@ -57,15 +57,24 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy
+        id: deploy
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ vars.AZURE_WEBAPP_NAME }}
           package: app.zip
 
       - name: Check the app is up
+        env:
+          # The address Azure reports (new web apps may have a unique one such as name-abc123.australiaeast-01.azurewebsites.net)
+          WEBAPP_URL: ${{ steps.deploy.outputs.webapp-url }}
+          WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
         run: |
+          url="${WEBAPP_URL:-https://${WEBAPP_NAME}.azurewebsites.net}"
+          url="${url%/}"
+          case "$url" in http://*) url="https://${url#http://}" ;; https://*) ;; *) url="https://$url" ;; esac
+          echo "Checking $url/healthz"
           for i in $(seq 1 30); do
-            if curl -fsS "https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/healthz"; then exit 0; fi
+            if curl -fsS "$url/healthz"; then exit 0; fi
             sleep 10
           done
           echo "The app did not answer /healthz after deploying" >&2
