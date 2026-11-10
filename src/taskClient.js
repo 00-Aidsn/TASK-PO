@@ -160,6 +160,8 @@ export function createTaskClient({
     getTerminalLocations: (token) => getAllPages('/terminals/locations', { token }),
     /** Units of measure: { "id": "name" } (used for UomSizeTypeId on supplier products). */
     getSizeTypes: (token) => request('GET', '/lookup/recipeSizeTypes', { token }),
+    /** Time zone names: standard (IANA) <-> Windows/.NET, e.g. { "Australia/Perth": "W. Australia Standard Time" }. */
+    getTimeZones: (token) => request('GET', '/lookup/timezones', { token }),
 
     // --- Products ---------------------------------------------------------
     /** Product record (ProductBusinessModel): IsActive, ProductDescription, POSDisplay, ... */

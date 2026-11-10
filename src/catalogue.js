@@ -6,6 +6,7 @@
  * Only the clerk's location list (their access scope) is cached briefly per session.
  */
 import { TaskApiError } from './taskClient.js';
+import { resolveStoreTimeZone, timeZoneLookup } from './timeZones.js';
 
 const LOCATION_CACHE_MS = 5 * 60_000;
 
@@ -104,15 +105,22 @@ function toSupplier(s, fallbackId) {
 }
 
 /**
- * A store's name and delivery address from TASK (GET /terminals/locations), for the purchase order's
- * "Venue" and "Ship To". Cached with the location list. Returns null if TASK doesn't say.
+ * A store's name, delivery address and time zone from TASK (GET /terminals/locations), for the purchase
+ * order's "Venue", "Ship To" and "Ordered" time. Cached with the location list. Returns null if TASK
+ * doesn't say. `timeZone` is a standard name (e.g. Australia/Perth), or null if it can't be worked out.
  */
 export async function getStoreDetails(task, session, locationNo) {
   const hit = session.storesCache;
   let stores = hit && Date.now() - hit.at < LOCATION_CACHE_MS ? hit.value : null;
   if (!stores) {
     try {
-      const rows = await task.getTerminalLocations(session.accessToken);
+      const [rows, zoneNames] = await Promise.all([
+        task.getTerminalLocations(session.accessToken),
+        task.getTimeZones(session.accessToken).then(timeZoneLookup, (err) => {
+          if (err instanceof TaskApiError && ['unauthorized', 'session_expired'].includes(err.kind)) throw err;
+          return new Map(); // the built-in names are used instead
+        }),
+      ]);
       stores = new Map(
         rows
           .filter((r) => r && Number.isInteger(Number(r.LocationNo)))
@@ -124,6 +132,7 @@ export async function getStoreDetails(task, session, locationNo) {
                 .map((p) => String(p ?? '').trim())
                 .filter((p) => p && p !== '0')
                 .join(', '),
+              timeZone: resolveStoreTimeZone({ timeZoneId: r.TimeZoneId, state: r.State, lookup: zoneNames }),
             },
           ]),
       );
@@ -134,6 +143,11 @@ export async function getStoreDetails(task, session, locationNo) {
     session.storesCache = { at: Date.now(), value: stores };
   }
   return stores.get(Number(locationNo)) || null;
+}
+
+/** The store's time zone (standard name), or `fallback` (DISPLAY_TIMEZONE) if TASK doesn't say. */
+export async function getStoreTimeZone(task, session, locationNo, fallback) {
+  return (await getStoreDetails(task, session, locationNo))?.timeZone || fallback;
 }
 
 /** TASK unit-of-measure names by id (for the PO's UOM column). Empty if TASK doesn't provide them. */

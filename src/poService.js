@@ -388,7 +388,8 @@ export async function emailPurchaseOrder({
     catalogue,
     productNames,
     uomNames,
-    timeZone: config.displayTimeZone,
+    timeZone: store?.timeZone || config.displayTimeZone, // the store's own time zone
+    taskTimeZone: config.taskTimeZone,
   });
   const email = await renderPurchaseOrderEmail({ doc, companyName: config.companyName });
 

@@ -58,7 +58,7 @@ ______________________________________________
 | Field | Comes from |
 |---|---|
 | Order No | The TASK PO number |
-| Ordered | When the PO was created, in `DISPLAY_TIMEZONE`, as `d/M/yyyy h:mm:ss AM` |
+| Ordered | When the PO was created, in the store's own time zone (from TASK), as `d/M/yyyy h:mm:ss AM` |
 | Required | The requested delivery date, at 12:00:00 AM |
 | Contact | The **Contact** on the supplier's TASK record |
 | Venue, Ship To | The store's name and address in TASK (`GET /terminals/locations`). New POs also store that address as the PO's Ship To, as TASK does. |
@@ -69,6 +69,17 @@ ______________________________________________
 | SubTotal / Tax / TOTAL | SubTotal is the sum of the lines; Tax is the PO's tax figure in TASK; TOTAL is SubTotal + Tax |
 
 A test checks the sample order above (MorCo Fresh VIC to Waurn Ponds) line by line against the required format.
+
+### Store time zones
+
+The Ordered time is shown in the store's own time zone, so a Perth store's PO shows Perth time. The app works out each store's zone from TASK, in this order:
+
+1. The store's `TimeZoneId` in TASK (`GET /terminals/locations`), if it's a standard name such as `Australia/Perth`.
+2. A Windows name such as `W. Australia Standard Time`, translated with TASK's own list (`GET /lookup/timezones`), or a built-in list for Australia and New Zealand if that can't be read.
+3. The store's state (NSW/ACT, VIC, QLD, SA, WA, TAS, NT).
+4. `DISPLAY_TIMEZONE`.
+
+The same zone decides "today" for the store, so a delivery date or invoice date isn't wrongly refused late in the evening in another state. If TASK returns a time without a time zone, `TASK_TIME_ZONE` says which zone it means.
 
 ## Live, active data only
 
@@ -291,7 +302,8 @@ The central hub (Supabase) is the **master list of staff**. The sync keeps TASK 
 | `COOKIE_SECURE` | true when `NODE_ENV=production` | Set `true` when served over HTTPS |
 | `TRUST_PROXY` | (blank) | Number of proxies in front of the app (Azure + Cloudflare: `2`), so the sign-in rate limiter sees real clerk IPs |
 | `CLOUDFLARE_ORIGIN_SECRET` | (blank) | When set, only requests with this `X-Origin-Verify` header (added by Cloudflare) are served; `/healthz` is exempt |
-| `DISPLAY_TIMEZONE` | `Australia/Sydney` | Time zone for dates in the UI and emails |
+| `DISPLAY_TIMEZONE` | `Australia/Sydney` | Used only when a store's time zone can't be worked out. See [Store time zones](#store-time-zones) |
+| `TASK_TIME_ZONE` | `DISPLAY_TIMEZONE` | The time zone TASK means when it returns a time without one (e.g. `2026-11-05T10:19:57`). Times with `Z` or an offset don't need it |
 | `COMPANY_NAME` | `Mad Mex` | Shown in the header and emails |
 | `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` | (blank) | Turn on the admin panel. See [Admin panel](#admin-panel-microsoft-entra-sign-in) |
 | `PUBLIC_BASE_URL` | (blank) | The app's https address (admin sign-in returns to `/admin/callback`) |
@@ -326,6 +338,7 @@ All calls go to `{TASK_BASE_URL}/api/v3`. Every call sends the `Key` header. Aft
 | Central hub (Supabase REST) | `GET {HUB_SUPABASE_URL}/rest/v1/{HUB_TABLE}?select=<mapped columns>` |
 | Clerk profile and permissions | `GET /auth/clerk/currentUser` |
 | Locations (and their venue) | `GET /stock/stocklocations` |
+| Store names, addresses and time zones | `GET /terminals/locations`, `GET /lookup/timezones` |
 | Suppliers (live, active only) | `GET /supplier`, `GET /supplier/{id}` |
 | Supplier products and case sizes (live) | `GET /supplier/{id}/productCodes` |
 | Supplier costs for a venue (live) | `GET /supplier/{id}/venueCosts?venueNo=` |
@@ -365,7 +378,8 @@ Run these against UAT with `MAIL_MODE=log` before going live:
    - **Ship To and Venue:** come from TASK's store records. Clerks' accounts must be allowed to read `GET /terminals/locations`; if they can't, Ship To falls back to what's on the PO.
    - **UOM:** shows TASK's unit names (`GET /lookup/recipeSizeTypes`) for the supplier product's `UomSizeTypeId`.
    - **Tax:** is TASK's figure for the PO. Check it's right for GST-able items such as packaging.
-   - **Ordered times:** are shown in `DISPLAY_TIMEZONE`. Stores in another time zone (e.g. WA or QLD) will show that zone's time.
+   - **Ordered times:** are in the store's own time zone. Send a PO for a Perth or Brisbane store and check it shows the local time there (Perth is 2–3 hours behind Sydney; Brisbane is an hour behind during daylight saving).
+   - **`TASK_TIME_ZONE`:** compare one PO's Ordered time with the time TASK shows for it. If they're out by a whole number of hours, TASK is returning times in another zone: set `TASK_TIME_ZONE` (e.g. `UTC`).
 
    Then switch to `MAIL_MODE=smtp` and send to an internal mailbox before sending to real suppliers.
 8. Confirm the status rule suits your process. Only approvers' POs are emailed. Change this in `src/routes/orders.js` and `src/poService.js` if needed.
@@ -403,6 +417,7 @@ The tests run against the fake TASK API in `test/mockTask.js`. They cover:
 - admin panel: Entra sign-in (PKCE, state, nonce, replayed or forged callbacks, other users and other tenants refused, object-ID allow-list); key masking; connection tests; approved hosts only; saves that TASK rejects aren't stored; a change switching every TASK call to the new server and key and signing clerks out; encryption at rest and restart; change history without key material; changes from other websites blocked
 - hub sync: preview changes nothing; matching by link, email, then name (approval-only, exact pairs); scheduled runs never apply name matches; only synced fields change and HR data and passwords are untouched; creation defaults; deactivation and reactivation; protected admins and the sync account; size limits held; an empty or unreachable hub changes nothing; TASK session renewal; links kept per TASK server; history without personal values
 - hosting: `/healthz`, the Cloudflare-only origin header (including secret rotation), and `TRUST_PROXY` hop counts giving real clerk IPs to the rate limiter
+- store time zones: TASK's `TimeZoneId` (standard or Windows names, via `/lookup/timezones` or the built-in table), the state fallback, Ordered times in Perth, Brisbane, Adelaide and Melbourne, daylight-saving changes, and "today" per store
 - supplier purchase order: the sample order reproduced exactly; dates, CSV layout, quoting and formula safety; PDF content and multi-page orders (checked with `pdftotext`); account numbers (add, change, remove, CSV import/export, shown on the emailed PO)
 - receiving: permissions; the open PO list; full, short and closed-short deliveries; invoices completed or left for a manager; cost changes; items not on the PO; deliveries with no PO; duplicate invoice numbers; rollback and partial failures; validation; double submits
 - the full send flow, rollback, email retry and idempotency
@@ -420,6 +435,7 @@ src/
   poService.js     order validation, PO creation with rollback, supplier email
   poDocument.js    the supplier purchase order format: email text/HTML, PDF and CSV
   accountNumbers.js  each store's account number with each supplier
+  timeZones.js     each store's time zone (TASK TimeZoneId, Windows names, state) and conversions
   receiving.js     receipt validation, invoice + PO updates with rollback
   settings.js      live TASK URL/key/environment, encrypted at rest, change history
   admin/entra.js   Microsoft Entra ID sign-in (OpenID Connect) and the admin allow-list

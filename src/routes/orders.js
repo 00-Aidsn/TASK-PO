@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireClerk, requirePermission } from '../session.js';
 import { TaskApiError } from '../taskClient.js';
-import { findLocation, getCatalogue, getStoreDetails, getSupplierLive } from '../catalogue.js';
+import { findLocation, getCatalogue, getStoreDetails, getStoreTimeZone, getSupplierLive } from '../catalogue.js';
 import {
   CatalogueChangedError,
   ORDER_STATUS,
@@ -45,7 +45,13 @@ export function orderRoutes({ task, mailer, config, accountNumbers = null }) {
 
   router.post('/orders', async (req, res) => {
     const session = req.session;
-    const input = validateOrderInput(req.body, { today: todayIn(config.displayTimeZone) });
+    // "Today" is the store's today (it matters for stores in other time zones late in the day).
+    const requested = Number(req.body?.locationNo);
+    const storeZone =
+      Number.isInteger(requested) && requested > 0
+        ? await getStoreTimeZone(task, session, requested, config.displayTimeZone)
+        : config.displayTimeZone;
+    const input = validateOrderInput(req.body, { today: todayIn(storeZone) });
 
     // A repeated click or network retry with the same key gets the first result back.
     session.orders ??= new Map();

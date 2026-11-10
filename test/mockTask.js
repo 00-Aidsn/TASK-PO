@@ -106,10 +106,18 @@ export function sampleData() {
     ],
     // GET /terminals/locations (LocationBusinessModel): store names and addresses for purchase orders
     terminalLocations: [
-      { LocationNo: 11, LocationFriendlyName: 'Demo Store - City', StreetAddress: 'Shop 1, 100 Collins Street', Suburb: 'Melbourne', State: 'VIC', PostCode: '3000', IsActive: true },
-      { LocationNo: 12, LocationFriendlyName: 'Demo Store - Beach', StreetAddress: '5 Esplanade', Suburb: 'St Kilda', State: 'VIC', PostCode: '3182', IsActive: true },
-      { LocationNo: 13, LocationFriendlyName: 'Demo Store - West', StreetAddress: '', Suburb: '', State: '', PostCode: '', IsActive: true },
+      // Time zones as TASK may hold them: a Windows/.NET name, or nothing (then the state decides).
+      { LocationNo: 11, LocationFriendlyName: 'Demo Store - City', StreetAddress: 'Shop 1, 100 Collins Street', Suburb: 'Melbourne', State: 'VIC', PostCode: '3000', TimeZoneId: 'AUS Eastern Standard Time', IsActive: true },
+      { LocationNo: 12, LocationFriendlyName: 'Demo Store - Beach', StreetAddress: '5 Marine Parade', Suburb: 'Cottesloe', State: 'WA', PostCode: '6011', TimeZoneId: 'W. Australia Standard Time', IsActive: true },
+      { LocationNo: 13, LocationFriendlyName: 'Demo Store - West', StreetAddress: '1 Brunswick Street', Suburb: 'Fortitude Valley', State: 'QLD', PostCode: '4006', TimeZoneId: '', IsActive: true },
     ],
+    // GET /lookup/timezones: standard name -> Windows/.NET name
+    timeZones: {
+      'Australia/Sydney': 'AUS Eastern Standard Time',
+      'Australia/Brisbane': 'E. Australia Standard Time',
+      'Australia/Adelaide': 'Cen. Australia Standard Time',
+      'Australia/Perth': 'W. Australia Standard Time',
+    },
     sizeTypes: { 1: 'Each', 2: 'kg', 3: 'Litre' },
     stockLocations: [
       { LocationNo: 11, LocationFriendlyName: 'Demo Store - City', LocationDescription: 'CITY', VenueNo: 1 },
@@ -378,6 +386,7 @@ export function createMockTask({ apiKey = MOCK_API_KEY, password = MOCK_PASSWORD
   app.get(`${base}/stock/stocklocations`, (req, res) => paged(req, res, state.data.stockLocations));
   app.get(`${base}/terminals/locations`, (req, res) => paged(req, res, state.data.terminalLocations));
   app.get(`${base}/lookup/recipeSizeTypes`, (req, res) => res.json(state.data.sizeTypes));
+  app.get(`${base}/lookup/timezones`, (req, res) => res.json(state.data.timeZones));
   app.get(`${base}/products/location/:locationNo/stock/products`, (req, res) => {
     if (state.failStock) return res.status(state.failStock).json({ Message: 'Stock service unavailable' });
     const locationNo = Number(req.params.locationNo);

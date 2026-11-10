@@ -57,7 +57,10 @@ export function loadConfig(env = process.env) {
     originSecrets: list(env.CLOUDFLARE_ORIGIN_SECRET),
     cookieSecure: bool(env.COOKIE_SECURE, production),
     sessionIdleMinutes: int(env.SESSION_IDLE_MINUTES, 30, 'SESSION_IDLE_MINUTES'),
+    // Used only when a store's time zone can't be worked out from TASK.
     displayTimeZone: env.DISPLAY_TIMEZONE || 'Australia/Sydney',
+    // The time zone TASK means when it returns a time without one (e.g. "2026-11-05T10:19:57").
+    taskTimeZone: env.TASK_TIME_ZONE || env.DISPLAY_TIMEZONE || 'Australia/Sydney',
     companyName: env.COMPANY_NAME || 'Mad Mex',
     catalogue: {
       // Only offer products that have a supplier cost for the location's venue.
@@ -226,6 +229,11 @@ export function loadConfig(env = process.env) {
     new Intl.DateTimeFormat('en-AU', { timeZone: config.displayTimeZone });
   } catch {
     problems.push(`DISPLAY_TIMEZONE "${config.displayTimeZone}" is not a valid time zone`);
+  }
+  try {
+    new Intl.DateTimeFormat('en-AU', { timeZone: config.taskTimeZone });
+  } catch {
+    problems.push(`TASK_TIME_ZONE "${config.taskTimeZone}" is not a valid time zone`);
   }
   if (problems.length) {
     throw new Error(`Configuration error:\n  - ${problems.join('\n  - ')}`);

@@ -17,6 +17,7 @@
  */
 import PDFDocument from 'pdfkit';
 import { escapeHtml } from './emailTemplate.js';
+import { wallClock, zonedTimeToInstant } from './timeZones.js';
 
 export const RULE = '_'.repeat(120);
 export const LINE_COLUMNS = ['Supplier Code', 'Product Description', 'Cases', 'Units', 'Total', 'UOM', 'Case Cost', 'Unit Cost', 'Total Cost'];
@@ -41,33 +42,25 @@ function clock(y, mo, d, h, mi, s) {
 }
 
 /**
- * When the order was placed, in the store's time zone. TASK may return times without a time zone
- * (already local); those are shown as they are.
+ * When the order was placed, in the store's time zone (d/M/yyyy h:mm:ss AM).
+ * Times with "Z" or an offset are converted directly. TASK may return times without a time zone; those
+ * are read as TASK's own time zone (TASK_TIME_ZONE) and then converted to the store's.
+ * Without a taskTimeZone, such times are shown as they are.
  */
-export function formatOrdered(value, timeZone) {
+export function formatOrdered(value, timeZone, { taskTimeZone } = {}) {
   const text = String(value || '').trim();
   const local = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/.exec(text);
   if (local) {
     if (Number(local[1]) < 1900) return '';
-    return clock(+local[1], +local[2], +local[3], +local[4], +local[5], +(local[6] || 0));
+    const wall = { year: +local[1], month: +local[2], day: +local[3], hour: +local[4], minute: +local[5], second: +(local[6] || 0) };
+    if (!taskTimeZone || taskTimeZone === timeZone) return clock(wall.year, wall.month, wall.day, wall.hour, wall.minute, wall.second);
+    const w = wallClock(zonedTimeToInstant(wall, taskTimeZone), timeZone);
+    return clock(w.year, w.month, w.day, w.hour, w.minute, w.second);
   }
   const d = new Date(text);
   if (!text || Number.isNaN(d.getTime()) || d.getUTCFullYear() < 1900) return '';
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat('en-AU', {
-      timeZone,
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-      hourCycle: 'h23',
-    })
-      .formatToParts(d)
-      .map((p) => [p.type, p.value]),
-  );
-  return clock(+parts.year, +parts.month, +parts.day, +parts.hour % 24, +parts.minute, +parts.second);
+  const w = wallClock(d, timeZone);
+  return clock(w.year, w.month, w.day, w.hour, w.minute, w.second);
 }
 
 /** The requested delivery day, at midnight: 7/11/2026 12:00:00 AM */
@@ -96,9 +89,22 @@ export function joinAddress(parts) {
  * @param {object} p.catalogue     live catalogue (all: Map productSupplierId -> { code, name, caseQty, caseCost, unitCost, uomSizeTypeId })
  * @param {Map}    [p.productNames] productId -> name, for lines no longer in the catalogue
  * @param {Map}    [p.uomNames]     TASK size type id -> name
- * @param {string} p.timeZone
+ * @param {string} p.timeZone      the store's time zone, e.g. Australia/Perth
+ * @param {string} [p.taskTimeZone] the time zone TASK means when it returns a time without one
  */
-export function buildPoDocument({ po, items, supplier, venueName, shipTo, accountNo, catalogue, productNames = new Map(), uomNames = new Map(), timeZone }) {
+export function buildPoDocument({
+  po,
+  items,
+  supplier,
+  venueName,
+  shipTo,
+  accountNo,
+  catalogue,
+  productNames = new Map(),
+  uomNames = new Map(),
+  timeZone,
+  taskTimeZone,
+}) {
   const lines = [...items]
     .sort((a, b) => (Number(a.PurchaseItemID) || 0) - (Number(b.PurchaseItemID) || 0))
     .map((item) => {
@@ -125,7 +131,7 @@ export function buildPoDocument({ po, items, supplier, venueName, shipTo, accoun
   const tax = num(po.Tax) > 0 ? round2(po.Tax) : 0; // TASK's own tax figure for the PO
   return {
     orderNo: String(po.PurchaseOrderID),
-    ordered: formatOrdered(po.Created, timeZone),
+    ordered: formatOrdered(po.Created, timeZone, { taskTimeZone }),
     required: formatRequired(po.DeliveryDate),
     contact: supplier.contact || '',
     venue: venueName || '',

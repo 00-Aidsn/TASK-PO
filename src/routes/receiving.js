@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireClerk, requirePermission } from '../session.js';
-import { findLocation, getCatalogue, getSupplierLive, getSuppliers, publicItem } from '../catalogue.js';
+import { findLocation, getCatalogue, getStoreTimeZone, getSupplierLive, getSuppliers, publicItem } from '../catalogue.js';
 import { STATUS_LABELS, ValidationError, todayIn } from '../poService.js';
 import {
   RECEIVABLE_STATUSES,
@@ -128,7 +128,13 @@ export function receivingRoutes({ task, config }) {
   router.post('/receiving', async (req, res) => {
     const session = req.session;
     const token = session.accessToken;
-    const input = validateReceiptInput(req.body, { today: todayIn(config.displayTimeZone) });
+    // "Today" is the store's today, so a late-evening delivery in another time zone isn't refused.
+    const requested = Number(req.body?.locationNo);
+    const storeZone =
+      Number.isInteger(requested) && requested > 0
+        ? await getStoreTimeZone(task, session, requested, config.displayTimeZone)
+        : config.displayTimeZone;
+    const input = validateReceiptInput(req.body, { today: todayIn(storeZone) });
 
     session.receipts ??= new Map();
     for (const [k, v] of session.receipts) if (Date.now() - v.at > IDEMPOTENCY_MS) session.receipts.delete(k);
